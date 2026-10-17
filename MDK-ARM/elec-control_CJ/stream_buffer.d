@@ -1,0 +1,14 @@
+elec-control_cj\stream_buffer.o: ../Middlewares/Third_Party/FreeRTOS/Source/stream_buffer.c
+elec-control_cj\stream_buffer.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdint.h
+elec-control_cj\stream_buffer.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h
+elec-control_cj\stream_buffer.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h
+elec-control_cj\stream_buffer.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stddef.h
+elec-control_cj\stream_buffer.o: ../Core/Inc/FreeRTOSConfig.h
+elec-control_cj\stream_buffer.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/projdefs.h
+elec-control_cj\stream_buffer.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/portable.h
+elec-control_cj\stream_buffer.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/deprecated_definitions.h
+elec-control_cj\stream_buffer.o: ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F/portmacro.h
+elec-control_cj\stream_buffer.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrappers.h
+elec-control_cj\stream_buffer.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h
+elec-control_cj\stream_buffer.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/list.h
+elec-control_cj\stream_buffer.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/stream_buffer.h

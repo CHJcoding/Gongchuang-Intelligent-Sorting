@@ -1,0 +1,13 @@
+elec-control_cj\croutine.o: ../Middlewares/Third_Party/FreeRTOS/Source/croutine.c
+elec-control_cj\croutine.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h
+elec-control_cj\croutine.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stddef.h
+elec-control_cj\croutine.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdint.h
+elec-control_cj\croutine.o: ../Core/Inc/FreeRTOSConfig.h
+elec-control_cj\croutine.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/projdefs.h
+elec-control_cj\croutine.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/portable.h
+elec-control_cj\croutine.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/deprecated_definitions.h
+elec-control_cj\croutine.o: ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F/portmacro.h
+elec-control_cj\croutine.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrappers.h
+elec-control_cj\croutine.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h
+elec-control_cj\croutine.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/list.h
+elec-control_cj\croutine.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/croutine.h
