@@ -1,0 +1,65 @@
+如果不想开多个终端，在 RDK 上也可以直接执行：
+/home/sunrise/start_n10_slam.sh
+
+在虚拟机中打开终端，启动 RViz2：
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=0
+unset ROS_LOCALHOST_ONLY
+rviz2 -d ~/.rviz2/n10.rviz
+
+在 RDK 任一终端执行：
+source /opt/tros/humble/setup.bash
+export ROS_DOMAIN_ID=0
+ros2 topic hz /scan
+ros2 topic hz /map
+
+3. 保存地图
+地图先不要关闭任何节点。在 RDK 上新开一个终端：
+source /opt/tros/humble/setup.bash
+export ROS_DOMAIN_ID=0
+mkdir -p ~/maps
+ros2 run nav2_map_server map_saver_cli -f ~/maps/my_map
+
+----------------------------------------------------------
+
+# RDK
+ssh root@10.14.143.122
+source /opt/ros/humble/setup.bash
+source /root/wlxc_ws/install/setup.bash
+export ROS_DOMAIN_ID=0
+ros2 launch lsn10 ls_n10.launch.py
+
+# VMware 虚拟机
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=0
+rviz2 -d ~/.rviz2/n10.rviz
+
+
+
+#避障节点启动
+# 回到工作空间根目录编译
+cd ~/simple_avoidance_ws
+colcon build --packages-select simple_avoidance
+# 加载环境
+source install/setup.bash
+# 确保雷达驱动和底盘驱动都已运行
+ros2 run simple_avoidance avoidance_node
+
+
+
+终端2：启动SLAM节点
+bash
+source /opt/tros/humble/setup.bash
+source ~/simple_avoidance_ws/install/setup.bash
+
+ros2 launch slam_toolbox online_async_launch.py \
+  slam_params_file:=/home/wheeltec/simple_avoidan
+ce_ws/src/slam_params.yaml
+
+
+#保存地图
+ros2 run nav2_map_server map_saver_cli -f ~/maps/my_map
+
+scp wheeltec@10.14.143.122:~/maps/my_map.pgm
+
+

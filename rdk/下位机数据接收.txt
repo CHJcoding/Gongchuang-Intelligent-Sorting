@@ -1,0 +1,9 @@
+检测设备
+ls /dev/ttyUSB* /dev/ttyACM*
+
+
+# 设置波特率为 115200（8N1）
+stty -F /dev/ttyUSB0 115200
+
+# 使用 cat 命令实时打印下位机发来的数据
+cat /dev/ttyUSB0

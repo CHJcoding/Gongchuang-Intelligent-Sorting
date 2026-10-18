@@ -1,0 +1,63 @@
+sk-9b18393910e849179f30fb80837fa6ea
+npx --verbose @deepseek-ai/dsh web
+
+1正确的传输命令
+在当前终端（wheeltec@humble:~/Desktop/x5_project/output$）直接执行：
+bash
+	scp yolov8_best.bin root@10.14.143.122:/root/
+
+或者，如果你不在这个目录下，用绝对路径也行：
+bash
+	scp /home/wheeltec/Desktop/x5_project/output/yolov8_best.bin root@192.168.2.40:/root/
+
+输入开发板的 root 密码后，28MB 的文件几秒钟就能传完。
+
+2传输完成后验证
+在 RDK X5 上执行：
+bash
+	ls -lh /root/yolov8_best.bin
+
+
+
+
+
+方案二：使用 TROS（ROS2）方案（
+
+加载环境：
+
+bash
+	source /opt/tros/humble/setup.bash
+
+
+配置摄像头类型：
+
+USB 摄像头：
+bash
+	export CAM_TYPE=usb
+
+
+MIPI 摄像头：
+bash
+	export CAM_TYPE=mipi
+
+
+启动 YOLOv8 检测：运行以下命令，它会默认启动 YOLOv8 检测：
+
+bash
+ros2 launch dnn_node_example dnn_node_example.launch.py \
+    dnn_example_config_file:=config/yolov8workconfig.json \
+    dnn_example_image_width:=1920 \
+    dnn_example_image_height:=1080
+
+source /opt/tros/humble/setup.bash
+export CAM_TYPE=usb
+
+
+如何替换为自己的 yolov8_best.bin 模型？
+在上述两种方案中，要使用你自己的模型，都需要做一件事：修改配置文件或启动参数，指向你的模型文件路径。
+
+对于 Python 示例：在运行命令后添加 --model-path 参数，例如：
+
+bash
+python usb_camera_yolov5x.py --model-path /path/to/your/yolov8_best.bin
+对于 TROS 方案：你需要找到并修改对应的 .json 配置文件（如 yolov8workconfig.json）中的模型路径字段，将其指向你的 yolov8_best.bin 文件。

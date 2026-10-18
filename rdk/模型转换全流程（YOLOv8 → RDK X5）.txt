@@ -1,0 +1,108 @@
+模型转换全流程（YOLOv8 → RDK X5）
+1. 宿主机准备工作（Ubuntu 虚拟机）
+1.1 创建项目目录
+bash
+mkdir -p ~/Desktop/x5_project/{onnx,config,output,calib_data/images}
+onnx/：存放导出的 ONNX 模型
+
+config/：存放转换配置文件
+
+output/：存放转换后的 .bin 模型
+
+calib_data/images/：存放校准图片（至少 100 张，原始尺寸即可）
+
+1.2 修改 YOLOv8 源码（关键！）
+找到 ultralytics/nn/modules/head.py，将 class Detect 的 forward 方法替换为：
+
+python
+def forward(self, x):
+    results = []
+    for i in range(self.nl):
+        box = self.cv2[i].permute(0, 2, 3, 1).contiguous()
+        cls = self.cv3[i].permute(0, 2, 3, 1).contiguous()
+        results.append(cls)   # 先分类
+        results.append(box)   # 再回归
+    return tuple(results)
+1.3 导出 ONNX（opset=11）
+python
+from ultralytics import YOLO
+model = YOLO('best.pt')  # 你的训练权重
+model.export(format='onnx', imgsz=640, opset=11, simplify=True)
+得到 best.onnx，放入 ~/Desktop/x5_project/onnx/。
+
+
+2. Docker 容器操作
+2.1 启动容器（挂载项目目录）
+bash
+
+docker run -it --name x5_dev \
+  -v ~/Desktop/x5_project:/workspace \
+  -w /workspace \
+  openexplorer/ai_toolchain_ubuntu_20_x5_cpu:v1.2.8-py310 \
+ 
+ 
+
+2.2 创建配置文件 config/convert.yaml
+bash
+
+cat > config/convert.yaml << 'EOF'
+model_parameters:
+  onnx_model: '/workspace/onnx/best.onnx'
+  march: 'bayes-e'
+  working_dir: '/workspace/output'
+  output_model_file_prefix: 'yolov8_best'
+
+input_parameters:
+  input_type_rt: 'nv12'
+  input_type_train: 'rgb'
+  input_layout_train: 'NCHW'
+  norm_type: 'data_scale'
+  scale_value: 0.003921568627451
+
+calibration_parameters:
+  cal_data_dir: '/workspace/calib_data/images_1'
+  cal_data_type: 'float32'      # 重要！
+  preprocess_on: True           # 自动 resize 校准图片
+EOF
+
+2.3 检查模型兼容性（可选）
+bash
+hb_mapper checker --model-type onnx --march bayes-e --model /workspace/onnx/best.onnx
+2.4 执行模型转换
+bash
+hb_mapper makertbin --model-type onnx --config config/convert.yaml
+成功后，在 /workspace/output/ 下会生成 best_bin（名称源于 ONNX 模型名）及其他中间文件。
+
+3. 获取转换模型并传输至 RDK X5
+3.1 退出容器
+bash
+exit
+3.2 确认宿主机上的输出文件
+文件位于 ~/Desktop/x5_project/output/best_bin。注意：如果当前用户是 root，路径为 /root/Desktop/...；如果是普通用户（如 ubuntu），路径为 /home/ubuntu/Desktop/...。
+
+3.3 通过 scp 传输到开发板
+bash
+scp ~/Desktop/x5_project/output/best_bin root@<开发板IP>:/root/yolov8_best.bin
+4. RDK X5 开发板部署
+4.1 安装推理库（使用新源）
+bash
+pip install bpu_infer_lib_x5 -i http://archive.d-robotics.cc/simple/ --trusted-host archive.d-robotics.cc
+4.2 准备推理脚本
+推荐直接使用 地平线官方 Model Zoo 的 YOLOv8 示例，替换模型文件即可快速运行。
+
+示例命令：
+
+bash
+git clone https://github.com/D-Robotics/rdk_model_zoo.git
+cd rdk_model_zoo/samples/vision/ultralytics_yolo
+python3 main.py --task detect --model-path /root/yolov8_best.bin --test-img test.jpg
+⚠️ 关键注意事项
+环节	要点
+ONNX 导出	opset 必须 ≤ 11，否则转换报错
+校准图片	至少 100 张，格式 JPG/PNG，preprocess_on: True 可自动 Resize
+配置文件	cal_data_type 使用 float32，避免 int8 导致的二进制读取错误
+文件路径	容器内 /workspace 映射宿主机 ~/Desktop/x5_project，注意用户身份（root 与普通用户）导致的路径差异
+模型文件名	生成的 .bin 文件名可能为 best_bin（取自 ONNX 名称），传输时可重命名
+🧪 验证转换成功
+若 hb_mapper makertbin 输出日志末尾有 Convert success 或 End hb_mapper，并在 output/ 目录下看到 best_bin、quantize.onnx、subgraph_*.json 等文件，即表示转换成功。
+
