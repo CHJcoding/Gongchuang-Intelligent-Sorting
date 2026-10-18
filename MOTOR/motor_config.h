@@ -1,6 +1,13 @@
 #ifndef __MOTOR_CONFIG_H__
 #define __MOTOR_CONFIG_H__
 
+/* ========== 电机地址 ========== */
+#define X_MOTOR_ADDR    1U
+#define Y_MOTOR_ADDR    2U
+#define Z_MOTOR_ADDR    3U
+#define CHASSIS_MOTOR_COUNT 3U
+
+
 /* ---------------- Mechanical dimensions ---------------- */
 #define MOTOR_LEAD_MM             200U  //【需要测试】电机转一圈 执行机构走多少，可以通过张大头位置模式测试
 #define AXIS_PULSES_PER_REV  3200.0f   /* 默认16细分，建议读回确认 */

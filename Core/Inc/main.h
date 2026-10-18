@@ -65,10 +65,20 @@ void Error_Handler(void);
 #define POWER_5V_GPIO_Port GPIOC
 #define ACC_CS_Pin GPIO_PIN_0
 #define ACC_CS_GPIO_Port GPIOC
+#define TIM2_CH1_PWM4_Pin GPIO_PIN_0
+#define TIM2_CH1_PWM4_GPIO_Port GPIOA
+#define TIM2_CH3_PWM3_Pin GPIO_PIN_2
+#define TIM2_CH3_PWM3_GPIO_Port GPIOA
+#define TIM1_CH1_PWM2_Pin GPIO_PIN_9
+#define TIM1_CH1_PWM2_GPIO_Port GPIOE
 #define ACC_INT_Pin GPIO_PIN_10
 #define ACC_INT_GPIO_Port GPIOE
 #define GYRO_INT_Pin GPIO_PIN_12
 #define GYRO_INT_GPIO_Port GPIOE
+#define TIM1_CH3_PWM1_Pin GPIO_PIN_13
+#define TIM1_CH3_PWM1_GPIO_Port GPIOE
+#define BUZZER_Pin GPIO_PIN_15
+#define BUZZER_GPIO_Port GPIOB
 #define GPIO_Input_Pin GPIO_PIN_15
 #define GPIO_Input_GPIO_Port GPIOA
 

@@ -33,8 +33,12 @@ elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm3
 elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_i2c_ex.h
 elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pwr.h
 elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pwr_ex.h
+elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_spi.h
+elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_spi_ex.h
 elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_tim.h
 elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_tim_ex.h
+elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart.h
+elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart_ex.h
 elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h
 elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h
 elec-control_cj\stm32h7xx_hal_i2c_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h

@@ -28,6 +28,8 @@
 /* USER CODE BEGIN Includes */
 #include "usbd_cdc_if.h"
 #include "usb_processing.h"
+#include "buzzer.h"
+#include "led.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -63,6 +65,13 @@ const osThreadAttr_t Comm_Task_attributes = {
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
+/* Definitions for Indicator_Task */
+osThreadId_t Indicator_TaskHandle;
+const osThreadAttr_t Indicator_Task_attributes = {
+  .name = "Indicator_Task",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
 /* Definitions for UsbRxQueue */
 osMessageQueueId_t UsbRxQueueHandle;
 const osMessageQueueAttr_t UsbRxQueue_attributes = {
@@ -76,6 +85,7 @@ const osMessageQueueAttr_t UsbRxQueue_attributes = {
 
 void StartDefaultTask(void *argument);
 void CommTask(void *argument);
+void IndicatorTask(void *argument);
 
 extern void MX_USB_DEVICE_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
@@ -117,6 +127,9 @@ void MX_FREERTOS_Init(void) {
   /* creation of Comm_Task */
   Comm_TaskHandle = osThreadNew(CommTask, NULL, &Comm_Task_attributes);
 
+  /* creation of Indicator_Task */
+  Indicator_TaskHandle = osThreadNew(IndicatorTask, NULL, &Indicator_Task_attributes);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -139,9 +152,19 @@ void StartDefaultTask(void *argument)
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
+    
+    WS2812_Init();
+    
+    //蓝色亮度为100共255，亮200ms灭800ms
+    WS2812_Blink(0, 0, 255, 100, 200, 800);
+    
   /* Infinite loop */
   for(;;)
   {
+    WS2812_Update();
+    osDelay(10);          
+      
+      
     osDelay(1);
   }
   /* USER CODE END StartDefaultTask */
@@ -176,6 +199,24 @@ void CommTask(void *argument)
     osDelay(1);
   }
   /* USER CODE END CommTask */
+}
+
+/* USER CODE BEGIN Header_IndicatorTask */
+/**
+* @brief Function implementing the Indicator_Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_IndicatorTask */
+void IndicatorTask(void *argument)
+{
+  /* USER CODE BEGIN IndicatorTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END IndicatorTask */
 }
 
 /* Private application code --------------------------------------------------*/

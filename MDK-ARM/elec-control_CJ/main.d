@@ -34,8 +34,12 @@ elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_i2c.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_i2c_ex.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pwr.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pwr_ex.h
+elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_spi.h
+elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_spi_ex.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_tim.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_tim_ex.h
+elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart.h
+elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart_ex.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h
@@ -47,7 +51,11 @@ elec-control_cj\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/depre
 elec-control_cj\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F/portmacro.h
 elec-control_cj\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrappers.h
 elec-control_cj\main.o: ../Drivers/CMSIS/RTOS2/Include/cmsis_os2.h
+elec-control_cj\main.o: ../Core/Inc/dma.h
 elec-control_cj\main.o: ../Core/Inc/fdcan.h
+elec-control_cj\main.o: ../Core/Inc/spi.h
+elec-control_cj\main.o: ../Core/Inc/tim.h
+elec-control_cj\main.o: ../Core/Inc/usart.h
 elec-control_cj\main.o: ../USB_DEVICE/App/usb_device.h
 elec-control_cj\main.o: ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_def.h
 elec-control_cj\main.o: ../USB_DEVICE/Target/usbd_conf.h

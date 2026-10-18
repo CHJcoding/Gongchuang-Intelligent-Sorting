@@ -6,11 +6,13 @@
 #include "Emm_V5.h"
 #include <string.h>
 
-/* ========== 电机地址 ========== */
-#define X_MOTOR_ADDR    1U
-#define Y_MOTOR_ADDR    2U
-#define Z_MOTOR_ADDR    3U
-#define CHASSIS_MOTOR_COUNT 3U
+/* 记得后期给函数重命名 chassis为底盘 */
+HAL_StatusTypeDef Chassis_EnableAll(void);
+HAL_StatusTypeDef Chassis_DisableAll(void);
+HAL_StatusTypeDef Chassis_Stop(void);
+HAL_StatusTypeDef Chassis_SetZeroPositions(void);
+HAL_StatusTypeDef Chassis_Init(void);
+static uint32_t Chassis_DistanceToPulses(uint32_t distance_mm);
 
 
 #endif

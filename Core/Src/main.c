@@ -22,6 +22,8 @@
 #include "cmsis_os2.h"
 #include "dma.h"
 #include "fdcan.h"
+#include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "usb_device.h"
 #include "gpio.h"
@@ -97,6 +99,10 @@ int main(void)
   MX_FDCAN1_Init();
   MX_UART7_Init();
   MX_USART10_UART_Init();
+  MX_TIM1_Init();
+  MX_TIM2_Init();
+  MX_TIM12_Init();
+  MX_SPI6_Init();
   /* USER CODE BEGIN 2 */
   
  /* Power_5V_EN = 1 */
