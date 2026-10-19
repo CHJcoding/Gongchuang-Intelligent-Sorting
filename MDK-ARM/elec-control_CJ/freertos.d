@@ -70,3 +70,9 @@ elec-control_cj\freertos.o: ../GPIO_CONTROL/buzzer.h
 elec-control_cj\freertos.o: ../Core/Inc/tim.h
 elec-control_cj\freertos.o: ../GPIO_CONTROL/led.h
 elec-control_cj\freertos.o: ../Core/Inc/spi.h
+elec-control_cj\freertos.o: ../SERVO/servo.h
+elec-control_cj\freertos.o: ../SERVO/servo_config.h
+elec-control_cj\freertos.o: ../MOTOR/Emm_V5.h
+elec-control_cj\freertos.o: ../MOTOR/ZDT_CAN.h
+elec-control_cj\freertos.o: ../Core/Inc/fdcan.h
+elec-control_cj\freertos.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdbool.h

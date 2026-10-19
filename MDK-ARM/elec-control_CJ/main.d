@@ -63,3 +63,5 @@ elec-control_cj\main.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdio.h
 elec-control_cj\main.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdlib.h
 elec-control_cj\main.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h
 elec-control_cj\main.o: ../Core/Inc/gpio.h
+elec-control_cj\main.o: ../MOTOR/ZDT_CAN.h
+elec-control_cj\main.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdbool.h

@@ -30,7 +30,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ZDT_CAN.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -112,6 +112,7 @@ int main(void)
   
     MX_USB_DEVICE_Init();
 
+    USER_CAN1_Init();
   /* USER CODE END 2 */
 
   /* Init scheduler */

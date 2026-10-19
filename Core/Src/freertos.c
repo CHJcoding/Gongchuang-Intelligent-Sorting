@@ -30,6 +30,8 @@
 #include "usb_processing.h"
 #include "buzzer.h"
 #include "led.h"
+#include "servo.h"
+#include "Emm_V5.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -39,6 +41,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define PNEUMATIC_TEST_ENABLE   1U
+
 
 /* USER CODE END PD */
 
@@ -152,20 +156,31 @@ void StartDefaultTask(void *argument)
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
-    
+
     WS2812_Init();
-    
-    //蓝色亮度为100共255，亮200ms灭800ms
+
+//    //蓝色亮度为100共255，亮200ms灭800ms
     WS2812_Blink(0, 0, 255, 100, 200, 800);
-    
-  /* Infinite loop */
-  for(;;)
+
+    Servo_Init();
+
+#if PNEUMATIC_TEST_ENABLE
+  for (uint32_t cycle = 0U; cycle < 10; cycle++)
   {
-    WS2812_Update();
-    osDelay(10);          
-      
-      
-    osDelay(1);
+      //Servo_SetPulse(1, 500);  
+      //osDelay(3000U);         
+      Servo_SetPulse(1, 2500);  
+      osDelay(3000U);
+
+  }
+
+  Pneumatic_AllOff();
+#endif
+
+  /* Test complete. Keep the task idle without changing the outputs. */
+  for (;;)
+  {
+    osDelay(1000U);
   }
   /* USER CODE END StartDefaultTask */
 }
@@ -181,7 +196,7 @@ void CommTask(void *argument)
 {
   /* USER CODE BEGIN CommTask */
     USB_RxPacket_t rxPacket;
-    
+
   /* Infinite loop */
   for(;;)
   {
@@ -189,12 +204,12 @@ void CommTask(void *argument)
       {
         //rxPacket.buffer, (uint16_t)rxPacket.len
           cmd_handle(rxPacket.buffer, rxPacket.len);
-          
+
           uint8_t txbuf[128];
             int n = snprintf((char*)txbuf, sizeof(txbuf), "ECHO: %.*s\r\n",
                              (int)rxPacket.len, rxPacket.buffer);
             CDC_Transmit_HS(txbuf, (uint16_t)n);
-        
+
       }
     osDelay(1);
   }
@@ -211,9 +226,15 @@ void CommTask(void *argument)
 void IndicatorTask(void *argument)
 {
   /* USER CODE BEGIN IndicatorTask */
+    Emm_V5_En_Control(3, 1, 0);
+    osDelay(300);
+    Emm_V5_Pos_Control(3 , 1, 200, 100, 2500, 0, 0);
+    osDelay(1000);
   /* Infinite loop */
   for(;;)
   {
+      //ZDTcontrol
+      
     osDelay(1);
   }
   /* USER CODE END IndicatorTask */
