@@ -1,0 +1,68 @@
+
+BQ半球WLZ五棱柱LK镂空正方体YZ圆柱SLZ三棱柱YZHU圆锥SMT正四面体
+
+## 要重点阅读的视觉识别代码（按阅读顺序）
+
+### 1. `core/camera.py` — 相机底层（先看它，其他都依赖它）
+
+- `CameraThread`：独立线程抓帧，通过 `get_frame()` 拿最新帧，队列只留最新帧，避免阻塞 UI。
+- 打开相机 **DSHOW 优先 → MSMF 回退**（注释里说明了原因：MSMF 在后台线程打开某些 USB 相机（如 RGB Camera）会永久阻塞，DSHOW 秒开）。
+- `list_cameras()`：枚举可用相机，带超时探测 + 30 秒缓存 + 互斥锁，防止多页面并发探测把同一路相机抢崩。
+
+### 2. `core/color_detector.py` — 六色检测核心（纯 OpenCV，无模型依赖）
+
+检测流水线（文件头部注释总结得很清楚）：
+
+```
+GaussianBlur → BGR转HSV → 六色掩码 → 开/闭运算 → findContours → 面积/宽高比筛选 → 输出
+```
+
+- 阈值表 `DEFAULT_THRESHOLDS`：黄 / 红 / 绿 / 蓝用 `H/S/V` 区间；**红是双区间合并**（H 0~16 ∪ 168~180，因为红色在 HSV 色环两端）；**白**看 "高 V 低 S"；**黑**看 "低 S 低 V"。
+- `detect(frame, roi)`：支持 ROI 框选，裁剪子图检测、坐标回加偏移还原。
+- `classify_roi(frame, box)`：对检测框中心 60% 区域做 HSV 掩码投票，命中占比最高者胜出 —— 这是融合识别里 "框内取色" 用的方法。
+- 黑块有 "紧致度过滤"（面积 / 外接矩形面积 ≥ 0.35），防止深色阴影误判。
+
+### 3. `ui/color_page.py` — 纯色块识别页
+
+- 直接调用 `ColorDetector.detect()` 画框，右侧可**在线微调每个颜色的 HSV 阈值**（QSpinBox 绑定 `update_threshold`）。
+- 支持鼠标拖拽框选 ROI，识别只在框内运行。
+- 结果表按颜色去重、中心点移动超 8px 才追加。
+
+### 4. `ui/yolo_page.py` — YOLO 检测页（模型加载 + 推理）
+
+- 加载 `best.pt` 有两种路径：**优先 `ultralytics.YOLO`**（兼容 YOLOv8 及部分 v5 权重），失败时 **fallback 官方 YOLOv5 仓库**（`attempt_load`，处理了 torch 2.6+ `weights_only` 兼容问题）。
+- 关键设计：模型加载和推理放在**后台线程 `_DetectWorker`**，帧队列只留最新帧，CPU 推理不卡 UI；结果通过 PyQt 信号回传主线程。
+- YOLOv5 推理流程：`letterbox(640) → BGR2RGB → 归一化 → 推理 → NMS → scale_coords 还原坐标`。
+
+### 5. `ui/combined_page.py` — 颜色形状融合识别页（最完整的一条视觉链路）
+
+- **方案 A 融合**：YOLO 出形状框（如圆柱），再对每个框调 `classify_roi` 做 HSV 主色投票 → 画面标签显示 "RED・圆柱"、表格记录 "红・圆柱"。
+- 取色在后台线程完成（`classify_roi` 每框多次掩码统计，放主线程会卡画面）。
+- 结果表按 "颜色 + 形状" 去重，中心点位移超 25px 才追加，行数上限 500。
+
+### 6. `core/sorter.py` — 分拣状态机（视觉结果怎么被使用）
+
+```
+IDLE → LOCKED(锁定目标+坐标快照) → DISPATCHED(下发) → WAIT_ACTION → WAIT_RESET → VERIFY(视觉校验) → SUCCESS(计数+1)/FAIL → IDLE
+```
+
+- 校验逻辑：锁定目标中心坐标的**容差圈（默认半径 50px）**内若仍检测到同色货物中心点 → 判失败（没移走）；无 → 判成功并计数 +1。
+- 纯 Python 回调设计（`on_state_changed / on_count_changed / on_result_reported`），不依赖 PyQt，方便与串口 / 机械臂联动。
+
+### 7. `capture_dataset.py` / `ui/dataset_page.py` — 数据采集
+
+- 命令行 / 界面两种入口采集 7 类几何体（镂空正方体、正四面体、五棱柱、三棱柱、圆锥、圆柱、半球）的训练图，输出到 `dataset/`（已存有 cone/cylinder 等目录）。
+- 中文路径写盘用 `imencode + tofile`（`cv2.imwrite` 在 Windows 非 ASCII 路径会失败）。
+
+### 8. 辅助理解
+
+- `ui/video_panel.py`：视频预览面板（叠加检测框 + 鼠标选点 / 框 ROI）。
+- `core/goods_config.py`：7 种货物清单（G001~G007），颜色识别后续采用 YOLO+HSV，几何体 `color_key` 暂留空预留。
+- `core/gantry_calib.py`：像素坐标 ↔ 机械坐标（mm）仿射变换求解，配对标定用。
+- `core/gantry_controller.py` / `serial_bridge.py`：龙门架 XY 定位 + 夹爪 + 串口（当前为模拟模式）。
+- `main.py` / `ui/main_window.py`：入口，6 个页签，切页签自动释放相机。
+
+## 一句话总结视觉链路
+
+> 
+> 相机帧（`camera.py`）→ 两条识别路径：HSV 六色（`color_detector.py`）和 YOLO 形状（`yolo_page.py` 加载 `best.pt`）→ 融合成 "颜色・形状"（`combined_page.py`）→ 分拣状态机校验是否移走目标（`sorter.py`）→ 计数 + 龙门架定位（`gantry_calib.py` + 串口）。

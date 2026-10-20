@@ -30,6 +30,12 @@ model = YOLO('best.pt')  # 你的训练权重
 model.export(format='onnx', imgsz=640, opset=11, simplify=True)
 得到 best.onnx，放入 ~/Desktop/x5_project/onnx/。
 
+在量化 VM 中运行：(装载docker容器)
+docker pull docker.1panel.live/openexplorer/ai_toolchain_ubuntu_20_x5_cpu:v1.2.8
+拉取完成后打上标准镜像名：
+docker tag \
+  docker.1panel.live/openexplorer/ai_toolchain_ubuntu_20_x5_cpu:v1.2.8 \
+  openexplorer/ai_toolchain_ubuntu_20_x5_cpu:v1.2.8
 
 2. Docker 容器操作
 2.1 启动容器（挂载项目目录）

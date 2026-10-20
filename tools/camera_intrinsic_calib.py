@@ -11,7 +11,7 @@
     c       开始解算内参
     d       切换显示去畸变效果
     q/ESC   退出
-
+q
 结果保存到 camera_intrinsic.json：
     {mtx: [[...]], dist: [...], reproj_error: 0.1, size: [w,h]}
 """
