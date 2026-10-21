@@ -1,0 +1,21 @@
+﻿# ---- 数据与模型（体积大，不入库）----
+mydata/
+**/dataset/
+*.pt
+*.onnx
+*.bin
+*.engine
+*.mp4
+*.avi
+
+# ---- 运行产物 ----
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+runs/
+weights/
+
+# ---- 采集/标定原始图 ----
+**/images/
+**/labels/
