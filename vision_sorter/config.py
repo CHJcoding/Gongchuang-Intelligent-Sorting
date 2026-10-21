@@ -4,9 +4,10 @@
 """
 
 # ============ 相机 (C100 USB, Linux V4L2) ============
+# 板端实测（10-21）：hobot_usb_cam 实际出图 640x480，MJPG。原配置写的 1280x720 与现场不符。
 CAM_INDEX = 0              # /dev/video0
-CAM_WIDTH = 1280
-CAM_HEIGHT = 720
+CAM_WIDTH = 640
+CAM_HEIGHT = 480
 CAM_FPS = 30
 
 # ============ YOLOv5s 检测 (地平线 BPU .bin 模型) ============
@@ -16,7 +17,9 @@ CAM_FPS = 30
 YOLO_BIN_MODEL = "weights/yolov5_best.bin"   # 板上实际文件名以板端为准
 YOLO_IMGSZ = 672            # 必须与 .bin 输入尺寸一致，否则维度报错
 YOLO_NUM_CLASSES = 7
-YOLO_CONF_THRES = 0.55
+# 板端实测（10-21）：0.25 时一帧能吐 45 个重叠误检；0.50 -> 2~4 个；0.80 -> 稳定 1 个。
+# 现场只有圆锥一种物料，统一用 0.80。
+YOLO_CONF_THRES = 0.80
 YOLO_IOU_THRES = 0.45
 # 7 类形状：顺序即 class_id，必须与 best.pt 的 model.names 完全一致
 SHAPE_NAMES = ["BQ", "LK", "SLZ", "SMT", "WLZ", "YZ", "YZHU"]
@@ -43,9 +46,14 @@ COLOR_RANGES_HSV = {
 RED_HSV_LOWER2 = [(170, 90, 50), (179, 255, 255)]
 
 # 反光/灰像素剔除
+# V_HIGH_THRES 仅保留给"高光=高V且低S"的场景参考；彩色像素判据只用 S 门限
+# （板端实测：过曝场景 53% 像素 V=255，若还要求 V<230 会把物料像素全剔掉）
 V_HIGH_THRES = 230
 S_LOW_THRES = 40
 MIN_PIXEL_RATIO = 0.15
+NEUTRAL_MIN_RATIO = 0.40   # 白/黑判定：中性像素占比达到此值即认定为中性色
+WHITE_V_MIN = 180          # 白/灰：低饱和且足够亮
+BLACK_V_MAX = 60           # 黑：暗
 # 深红 vs 暗橙 二次判别阈值
 DARK_RED_RATIO_THRES = 0.62
 
@@ -56,6 +64,20 @@ HAND_EYE_M = [
     [0.000, -0.038, 410.0],
 ]
 Z_OFFSET = 0.0
+
+# ============ ROS2 话题（D1 架构：订阅官方 dnn_node_example）============
+# 板端实测：/hobot_dnn_detection 类型 ai_msgs/PerceptionTargets，Target 字段是 rois
+DET_TOPIC = "/hobot_dnn_detection"
+IMG_TOPIC = "/image"                 # sensor_msgs/CompressedImage (jpeg)
+RESULT_TOPIC = "/vision/result"      # 与 chassis_driver.py 的订阅名对齐
+
+# ============ 分拣触发 ============
+AUTO_TRIGGER = True        # True: 检测到就抓（冷却 SORT_COOLDOWN_S）；False: 等 /sort/start
+SORT_COOLDOWN_S = 2.0      # 两次下发的最小间隔
+SAME_TARGET_LOCK_PX = 45   # 已下发物料在多少像素内视为"同一个"，不重复抓
+SAME_TARGET_LOCK_S = 20.0  # 锁定最长保持时间，超时后允许再抓
+COLOR_MIN_CONF = 0.60      # HSV 颜色投票置信度下限，低于则本帧放弃
+SERIAL_SIM = False         # True: 不连下位机，只打印指令（无 STM32 时调试用）
 
 # ============ 串口 (Linux) ============
 SERIAL_PORT = "/dev/ttyUSB0"
