@@ -9,17 +9,21 @@ CAM_WIDTH = 1280
 CAM_HEIGHT = 720
 CAM_FPS = 30
 
-# ============ YOLOv5n 检测 (地平线BPU .bin模型) ============
-# 用 hb_toolchain 把 pt -> onnx -> .bin 后放到 weights/ 目录
-YOLO_BIN_MODEL = "weights/yolov5n_shape_640x640_nv12.bin"
-YOLO_IMGSZ = 640
+# ============ YOLOv5s 检测 (地平线 BPU .bin 模型) ============
+# 基线（2026-10-21 实读核实）：best.pt = myYOLOv5s，7 类，训练 imgsz=640；
+# 实际导出 ONNX/bin 为 672×672 + NHWC raw 三尺度（36 = 3×(5+7)）。
+# 决策 D2：暂用板上已跑通的 672，不重导出；现场精度不足再回 640。
+YOLO_BIN_MODEL = "weights/yolov5_best.bin"   # 板上实际文件名以板端为准
+YOLO_IMGSZ = 672            # 必须与 .bin 输入尺寸一致，否则维度报错
+YOLO_NUM_CLASSES = 7
 YOLO_CONF_THRES = 0.55
 YOLO_IOU_THRES = 0.45
-# 9种形状类别名，按你训练 labels.txt 顺序改
-SHAPE_NAMES = [
-    "circle", "square", "triangle", "rectangle", "pentagon",
-    "star", "cross", "ring", "half_circle"
-]
+# 7 类形状：顺序即 class_id，必须与 best.pt 的 model.names 完全一致
+SHAPE_NAMES = ["BQ", "LK", "SLZ", "SMT", "WLZ", "YZ", "YZHU"]
+SHAPE_NAMES_CN = {
+    "BQ": "半球", "LK": "镂空正方体", "SLZ": "三棱柱", "SMT": "正四面体",
+    "WLZ": "五棱柱", "YZ": "圆柱", "YZHU": "圆锥",
+}
 
 # ============ HSV 颜色阈值 ============
 # 用 color_tuner.py 在现场补光下调好后填这里。

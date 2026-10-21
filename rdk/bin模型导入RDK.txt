@@ -1,4 +1,4 @@
-sk-9b18393910e849179f30fb80837fa6ea
+（此处原有一个明文 API Key，2026-10-21 已清除；必须到控制台作废并重新生成，旧 Key 已随 git 推送到远程，视为泄露）
 npx --verbose @deepseek-ai/dsh web
 
 1正确的传输命令
