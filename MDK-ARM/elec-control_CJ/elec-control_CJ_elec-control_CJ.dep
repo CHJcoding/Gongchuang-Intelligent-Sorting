@@ -105,8 +105,8 @@ I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h)(0x6AD32122)
 I (../Core/Inc/fdcan.h)(0x6AD3217F)
 I (D:\Keil_v5\ARM\ARMCC\include\stdbool.h)(0x5F63877C)
 F (..\MOTOR\Emm_V5.h)(0x6AD37313)()
-F (..\MOTOR\motor.c)(0x6AD387FD)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\motor.o --omf_browse elec-control_cj\motor.crf --depend elec-control_cj\motor.d)
-I (..\MOTOR\motor.h)(0x6AD43DC6)
+F (..\MOTOR\motor.c)(0x6ADAFCD9)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\motor.o --omf_browse elec-control_cj\motor.crf --depend elec-control_cj\motor.d)
+I (..\MOTOR\motor.h)(0x6ADAFABD)
 I (../Core/Inc/main.h)(0x6AD4451A)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h)(0x6AD32122)
 I (../Core/Inc/stm32h7xx_hal_conf.h)(0x6AD4451A)
@@ -150,14 +150,14 @@ I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart_ex.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h)(0x6AD32122)
-I (..\MOTOR\motor_config.h)(0x6AD61326)
+I (..\MOTOR\motor_config.h)(0x6ADAFA57)
 I (..\MOTOR\Emm_V5.h)(0x6AD37313)
 I (..\MOTOR\ZDT_CAN.h)(0x6AD36DED)
 I (../Core/Inc/fdcan.h)(0x6AD3217F)
 I (D:\Keil_v5\ARM\ARMCC\include\stdbool.h)(0x5F63877C)
 I (D:\Keil_v5\ARM\ARMCC\include\string.h)(0x5F63878A)
-F (..\MOTOR\motor.h)(0x6AD43DC6)()
-F (..\MOTOR\motor_config.h)(0x6AD61326)()
+F (..\MOTOR\motor.h)(0x6ADAFABD)()
+F (..\MOTOR\motor_config.h)(0x6ADAFA57)()
 F (..\SCREEN\screen.c)(0x6AD38AE8)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\screen.o --omf_browse elec-control_cj\screen.crf --depend elec-control_cj\screen.d)
 I (../Core/Inc/usart.h)(0x6AD38B0A)
 I (../Core/Inc/main.h)(0x6AD4451A)
@@ -461,7 +461,7 @@ I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart_ex.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h)(0x6AD32122)
-F (../Core/Src/freertos.c)(0x6AD615B6)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\freertos.o --omf_browse elec-control_cj\freertos.crf --depend elec-control_cj\freertos.d)
+F (../Core/Src/freertos.c)(0x6ADAFB93)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\freertos.o --omf_browse elec-control_cj\freertos.crf --depend elec-control_cj\freertos.d)
 I (../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h)(0x6AD3213B)
 I (D:\Keil_v5\ARM\ARMCC\include\stddef.h)(0x5F63877C)
 I (D:\Keil_v5\ARM\ARMCC\include\stdint.h)(0x5F63877C)
@@ -537,6 +537,8 @@ I (../MOTOR/Emm_V5.h)(0x6AD37313)
 I (../MOTOR/ZDT_CAN.h)(0x6AD36DED)
 I (../Core/Inc/fdcan.h)(0x6AD3217F)
 I (D:\Keil_v5\ARM\ARMCC\include\stdbool.h)(0x5F63877C)
+I (../MOTOR/motor.h)(0x6ADAFABD)
+I (../MOTOR/motor_config.h)(0x6ADAFA57)
 F (../Core/Src/dma.c)(0x6AD38ACC)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\dma.o --omf_browse elec-control_cj\dma.crf --depend elec-control_cj\dma.d)
 I (../Core/Inc/dma.h)(0x6AD38ACC)
 I (../Core/Inc/main.h)(0x6AD4451A)

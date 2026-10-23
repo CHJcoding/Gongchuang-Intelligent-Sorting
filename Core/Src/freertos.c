@@ -32,6 +32,7 @@
 #include "led.h"
 #include "servo.h"
 #include "Emm_V5.h"
+#include "motor.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -226,14 +227,30 @@ void CommTask(void *argument)
 void IndicatorTask(void *argument)
 {
   /* USER CODE BEGIN IndicatorTask */
-    Emm_V5_En_Control(3, 1, 0);
-    osDelay(300);
-    Emm_V5_Pos_Control(3 , 1, 200, 100, 2500, 0, 0);
-    osDelay(1000);
+    Chassis_Init();
+    osDelay(200);
+    
+     /* 从 (0,0) 开始 */
+    Chassis_SetZeroPositions();
+    osDelay(200U);
+    
   /* Infinite loop */
   for(;;)
   {
       //ZDTcontrol
+      
+      /* ---------- 1. 单轴方向：A 正转 10mm ----------
+         * 预期：只有 A 电机转，B 不动
+         * 反了：改 A_DIR_SIGN
+         */
+        Chassis_MoveTo(10.0f, 0.0f, 100U, 30U);   // A=B=800，两电机同向
+        osDelay(1500U);
+
+        /* ---------- 2. 回原点 ---------- */
+        Chassis_MoveTo(0.0f, 0.0f, 100U, 30U);
+        osDelay(1500U);
+
+      
       
     osDelay(1);
   }

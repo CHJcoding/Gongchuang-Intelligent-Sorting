@@ -27,11 +27,14 @@ Project File Date:  10/19/2026
 <h2>Output:</h2>
 *** Using Compiler 'V5.06 update 7 (build 960)', folder: 'D:\Keil_v5\ARM\ARMCC\Bin'
 Build target 'elec-control_CJ'
-compiling freertos.c...
+compiling motor.c...
+..\MOTOR\motor.c(26): warning:  #177-D: function "Chassis_Abs"  was declared but never referenced
+  static float Chassis_Abs(float v)
+..\MOTOR\motor.c: 1 warning, 0 errors
 linking...
-Program Size: Code=43474 RO-data=1206 RW-data=472 ZI-data=30432  
+Program Size: Code=44600 RO-data=1208 RW-data=480 ZI-data=30432  
 FromELF: creating hex file...
-"elec-control_CJ\elec-control_CJ.axf" - 0 Error(s), 0 Warning(s).
+"elec-control_CJ\elec-control_CJ.axf" - 0 Error(s), 1 Warning(s).
 
 <h2>Software Packages used:</h2>
 

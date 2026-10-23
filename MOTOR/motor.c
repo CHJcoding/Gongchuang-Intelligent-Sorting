@@ -5,17 +5,14 @@
  * ============================================================ */
 //用于for循环统一命令电机
 static const uint8_t s_motor_addr[CHASSIS_MOTOR_COUNT] = {
-    X_MOTOR_ADDR,    //x轴
-    Y_MOTOR_ADDR,    //y轴
+    A_MOTOR_ADDR,    //A轴
+    B_MOTOR_ADDR,    //B轴
     Z_MOTOR_ADDR     //z轴
 };
 
-//存储方向
-static const uint8_t s_forward_dir[CHASSIS_MOTOR_COUNT] = {
-    MOTOR_X_DIR,       //x轴
-    MOTOR_Y_DIR,       //y轴
-    MOTOR_Z_DIR        //z轴
-};
+/* H7 端维护的当前绝对坐标（mm） */
+static float s_cur_x_mm = 0.0f;
+static float s_cur_y_mm = 0.0f;
 
 /* ============================================================
  *                        工具函数
@@ -37,15 +34,15 @@ static float Chassis_Abs(float v)
   * @Intro    mm/s为电机实际运动距离，输出为RPM表示电机每分钟转多少圈
   */
 /* mm/s → RPM（有4舍5入功能）速度模式 */
-static uint16_t Chassis_SpeedToRpm(float mm_s)
-{
-    float rpm = fabsf(mm_s) * 60.0f / MOTOR_LEAD_MM;
-    
-    if(rpm > (float)MOTOR_MAX_RPM){
-        rpm = (float)MOTOR_MAX_RPM;
-    }
-    return (uint16_t)(rpm + 0.5f);  
-}
+//static uint16_t Chassis_SpeedToRpm(float mm_s)
+//{
+//    float rpm = fabsf(mm_s) * 60.0f / MOTOR_LEAD_MM;
+//    
+//    if(rpm > (float)MOTOR_MAX_RPM){
+//        rpm = (float)MOTOR_MAX_RPM;
+//    }
+//    return (uint16_t)(rpm + 0.5f);  
+//}
 
 /* ============================================================
  *                        初始化
@@ -102,6 +99,11 @@ HAL_StatusTypeDef Chassis_SetZeroPositions(void)
         Emm_V5_Reset_CurPos_To_Zero(s_motor_addr[i]);
     }
     HAL_Delay(20U);
+    
+    /* 关键：软件坐标也清零 */
+    s_cur_x_mm = 0.0f;
+    s_cur_y_mm = 0.0f;
+    
     return HAL_OK;
 }
 
@@ -128,13 +130,83 @@ HAL_StatusTypeDef Chassis_Init(void)
     return HAL_OK;
 }
 
-/* ============================================================
- *                        预设动作
- * ============================================================ */
 
-/* 距离 → 脉冲数 */
-static uint32_t Chassis_DistanceToPulses(uint32_t distance_mm)
+/* ============================================================
+ *                        核心算法
+ * ============================================================ */
+//CoreXY 逆解结果，单位：脉冲
+typedef struct {
+    int32_t steps_A;
+    int32_t steps_B;
+} CoreXY_Target_t;
+
+/* 逆解：XY目标（mm）→ A/B电机脉冲数(带符号) */
+CoreXY_Target_t corexy_inverse(float X_mm, float Y_mm, float steps_per_mm)
 {
-    float pulses = distance_mm / MOTOR_LEAD_MM * AXIS_PULSES_PER_REV * AXIS_GEAR_RATIO;
-    return (uint32_t)(fabsf(pulses) + 0.5f);
+    CoreXY_Target_t t;
+    t.steps_A = (int32_t)lroundf((X_mm + Y_mm) * steps_per_mm);
+    t.steps_B = (int32_t)lroundf((X_mm - Y_mm) * steps_per_mm);
+    return t;
 }
+
+//使用：Chassis_MoveTo(100.0f, 50.0f, 200U, 50U); 走到(100mm, 50mm)，电机转速上限 200RPM，加速度 50
+HAL_StatusTypeDef Chassis_MoveTo(float x_mm, float y_mm, uint16_t vel_rpm, uint8_t acc)
+{
+    
+     /* 1. 目标 - 当前 = 增量 */
+    float dx = x_mm - s_cur_x_mm;
+    float dy = y_mm - s_cur_y_mm;
+    
+    /* 2. 增量逆解 */
+    CoreXY_Target_t t = corexy_inverse(dx, dy, COREXY_STEPS_PER_MM);
+
+    /* 3. 方向极性修正（只影响符号，不影响运动距离） */
+    int32_t sA = t.steps_A * A_DIR_SIGN;
+    int32_t sB = t.steps_B * B_DIR_SIGN;
+    
+    /* 4. 带符号脉冲 → 方向 + 绝对值 */
+    uint8_t  dir_A = (sA >= 0) ? 1U : 0U;      /* 1=CCW，0=CW，按电机接线定 */
+    uint8_t  dir_B = (sB >= 0) ? 1U : 0U;
+    uint32_t clk_A = (uint32_t)((sA >= 0) ? sA : -sA);
+    uint32_t clk_B = (uint32_t)((sB >= 0) ? sB : -sB);
+    
+    /* 5. 已经到目标位置，不动，但坐标要同步 */
+    if (clk_A == 0U && clk_B == 0U) {
+        s_cur_x_mm = x_mm;
+        s_cur_y_mm = y_mm;
+        return HAL_OK;
+    }
+    
+    /* 6. 按距离比例分配速度/加速度，保证两轴同时到位 */
+    uint32_t d_max = (clk_A > clk_B) ? clk_A : clk_B;
+    if (d_max == 0U) d_max = 1U;   /* 防除零；理论上走不到这里 */
+    
+    uint16_t v_A = (uint16_t)(((uint32_t)vel_rpm * clk_A) / d_max);
+    uint16_t v_B = (uint16_t)(((uint32_t)vel_rpm * clk_B) / d_max);
+    if (v_A == 0U) v_A = 1U;       /* 速度不能为 0 */
+    if (v_B == 0U) v_B = 1U;
+
+    uint8_t acc_A = (uint8_t)(((uint32_t)acc * clk_A) / d_max);
+    uint8_t acc_B = (uint8_t)(((uint32_t)acc * clk_B) / d_max);
+    if (acc_A == 0U) acc_A = 1U;   /* acc=0 是“直接启动”，必须兜底 */
+    if (acc_B == 0U) acc_B = 1U;
+
+    /* 7. 两轴都带 snF=true，等广播；
+     *    raF=2：相对“当前实时位置”，避免上一段未走完时叠加误差
+     */
+    //位置模式！
+    Emm_V5_Pos_Control(A_MOTOR_ADDR, dir_A, v_A, acc_A, clk_A, 2, true);
+    Emm_V5_Pos_Control(B_MOTOR_ADDR, dir_B, v_B, acc_B, clk_B, 2, true);
+
+    /* 8. 广播同步，两轴同一时刻启动 */
+    Emm_V5_Synchronous_motion(0U);
+    
+    /* 9. 更新 H7 端坐标 */
+    s_cur_x_mm = x_mm;
+    s_cur_y_mm = y_mm;
+
+
+    return HAL_OK;
+    
+}
+
