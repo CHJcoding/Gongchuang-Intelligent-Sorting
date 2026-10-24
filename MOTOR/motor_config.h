@@ -34,16 +34,14 @@
 /* ============================================================
  *  XY 轴机械参数（CoreXY，同步带 + 同步轮）
  * ============================================================ */
- 
- /* GT2 同步带节距 2.0mm */
-#define XY_BELT_PITCH_MM      2.0f
 /* 同步轮齿数：20T 常见；换成 16T/24T 只改这里 */
 #define XY_PULLEY_TEETH       20U
+ /* GT2 同步带节距 2.0mm */
+#define XY_BELT_PITCH_MM      2.0f
 /* 节圆周长 = 齿数 × 节距 = 20 × 2 = 40mm */
 #define XY_PULLEY_CIRCUM_MM   ((float)XY_PULLEY_TEETH * XY_BELT_PITCH_MM)
 /* 同步轮与电机直连填 1.0f；带减速箱填实际减速比 */
 #define XY_GEAR_RATIO         1.0f
- 
 /* 每毫米脉冲数 = 3200 / 40 = 80 */
 #define COREXY_STEPS_PER_MM   \
     ((float)MOTOR_PULSES_PER_REV * XY_GEAR_RATIO / XY_PULLEY_CIRCUM_MM)

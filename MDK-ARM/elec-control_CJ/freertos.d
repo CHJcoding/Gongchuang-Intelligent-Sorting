@@ -78,3 +78,7 @@ elec-control_cj\freertos.o: ../Core/Inc/fdcan.h
 elec-control_cj\freertos.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdbool.h
 elec-control_cj\freertos.o: ../MOTOR/motor.h
 elec-control_cj\freertos.o: ../MOTOR/motor_config.h
+elec-control_cj\freertos.o: ../SCREEN/screen.h
+elec-control_cj\freertos.o: ../Core/Inc/usart.h
+elec-control_cj\freertos.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdarg.h
+elec-control_cj\freertos.o: ../SCREEN/screen_config.h

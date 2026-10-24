@@ -65,7 +65,7 @@
 "elec-control_cj\usbd_ctlreq.o"
 "elec-control_cj\usbd_ioreq.o"
 "elec-control_cj\usbd_cdc.o"
---strict --scatter "elec-control_CJ\elec-control_CJ.sct"
+--library_type=microlib --strict --scatter "elec-control_CJ\elec-control_CJ.sct"
 --summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
 --info sizes --info totals --info unused --info veneers
 --list "elec-control_CJ.map" -o elec-control_CJ\elec-control_CJ.axf

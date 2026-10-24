@@ -1,4 +1,8 @@
 elec-control_cj\screen.o: ..\SCREEN\screen.c
+elec-control_cj\screen.o: ..\SCREEN\screen.h
+elec-control_cj\screen.o: ../Drivers/CMSIS/RTOS2/Include/cmsis_os2.h
+elec-control_cj\screen.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdint.h
+elec-control_cj\screen.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stddef.h
 elec-control_cj\screen.o: ../Core/Inc/usart.h
 elec-control_cj\screen.o: ../Core/Inc/main.h
 elec-control_cj\screen.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h
@@ -8,7 +12,6 @@ elec-control_cj\screen.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_def.
 elec-control_cj\screen.o: ../Drivers/CMSIS/Device/ST/STM32H7xx/Include/stm32h7xx.h
 elec-control_cj\screen.o: ../Drivers/CMSIS/Device/ST/STM32H7xx/Include/stm32h723xx.h
 elec-control_cj\screen.o: ../Drivers/CMSIS/Include/core_cm7.h
-elec-control_cj\screen.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdint.h
 elec-control_cj\screen.o: ../Drivers/CMSIS/Include/cmsis_version.h
 elec-control_cj\screen.o: ../Drivers/CMSIS/Include/cmsis_compiler.h
 elec-control_cj\screen.o: ../Drivers/CMSIS/Include/cmsis_armcc.h
@@ -17,7 +20,6 @@ elec-control_cj\screen.o: ../Drivers/CMSIS/Include/cachel1_armv7.h
 elec-control_cj\screen.o: ../Drivers/CMSIS/Device/ST/STM32H7xx/Include/system_stm32h7xx.h
 elec-control_cj\screen.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h
 elec-control_cj\screen.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy/stm32_hal_legacy.h
-elec-control_cj\screen.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stddef.h
 elec-control_cj\screen.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\math.h
 elec-control_cj\screen.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_rcc_ex.h
 elec-control_cj\screen.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_gpio.h
@@ -44,5 +46,9 @@ elec-control_cj\screen.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart
 elec-control_cj\screen.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h
 elec-control_cj\screen.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h
 elec-control_cj\screen.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h
-elec-control_cj\screen.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdio.h
+elec-control_cj\screen.o: ../COMMUNICATE/usb_processing.h
+elec-control_cj\screen.o: ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os.h
 elec-control_cj\screen.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h
+elec-control_cj\screen.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdio.h
+elec-control_cj\screen.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdarg.h
+elec-control_cj\screen.o: ..\SCREEN\screen_config.h

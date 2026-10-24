@@ -1,7 +1,31 @@
-#include "usart.h"   /* CubeMX生成的UART10句柄 */
-#include <stdio.h>
-#include <stdarg.h>
-#include <string.h>
+#include "screen.h" 
+#include "screen_config.h"
+
+// =========================================================
+// 数组定义放在 .c 文件中，防止头文件被多次包含导致报错
+// =========================================================
+
+// 形状名称查找表：通过 shape_id 直接拿到中文名
+const char* const shape_name_table[10] = {
+    NAME_CUBOID, NAME_HOLLOW_CUBE, NAME_SPHERE, NAME_TRI_PRISM, NAME_CONE,
+    NAME_CUBE, NAME_CYLINDER, NAME_PENT_PRISM, NAME_HEX_PRISM, NAME_TRI_PYRAMID
+};
+
+// 二维图片索引表: [形状ID][颜色ID] = 屏幕图片ID
+const uint8_t shape_color_pic_table[10][10] = {
+    // 颜色: 0(红) 1(橙) 2(黄) 3(绿) 4(棕) 5(蓝) 6(紫) 7(品) 8(黑) 9(白)
+    /* 0 长方体     */  {   0,    1,    2,    3,    4,    5,    6,    7,    8,    9 },
+    /* 1 镂空正方体 */  {  10,   11,   12,   13,   14,   15,   16,   17,   18,   19 },
+    /* 2 球         */  {  20,   21,   22,   23,   24,   25,   26,   27,   28,   29 },
+    /* 3 三棱柱     */  {  30,   31,   32,   33,   34,   35,   36,   37,   38,   39 },
+    /* 4 圆锥       */  {  40,   41,   42,   43,   44,   45,   46,   47,   48,   49 },
+    /* 5 正方体     */  {  50,   51,   52,   53,   54,   55,   56,   57,   58,   59 },
+    /* 6 圆柱       */  {  60,   61,   62,   63,   64,   65,   66,   67,   68,   69 },
+    /* 7 五棱柱     */  {  70,   71,   72,   73,   74,   75,   76,   77,   78,   79 },
+    /* 8 六棱柱     */  {  80,   81,   82,   83,   84,   85,   86,   87,   88,   89 },
+    /* 9 三棱锥     */  {  90,   91,   92,   93,   94,   95,   96,   97,   98,   99 }
+};
+
 
 /**
  * @brief 发送文本到陶晶驰串口屏的文本控件
@@ -152,3 +176,28 @@ void screen_update_row(uint8_t row, const char *name, uint32_t pic_id, int32_t c
 //调用案例：
 //screen_update_row(1, "三角形", 1, 0);
 //分别是：第几行，什么名字，图片id，抓取数量
+
+
+// =========================================================
+// 新增：自动根据视觉解析结果更新屏幕
+// =========================================================
+/**
+ * @brief 根据视觉识别结果自动更新屏幕指定行
+ * @param target_row 屏幕上的目标行 (1~6)
+ * @param count 当前累计的分拣数量
+ */
+void screen_update_vision(uint8_t target_row, int32_t count)
+{
+    uint8_t s_id = g_vision_Data.M_shape_id;
+    uint8_t c_id = g_vision_Data.M_color_id;
+    
+
+    // 1. 查表获取文字名称
+    const char *name = shape_name_table[s_id];
+    
+    // 2. 查二维表获取组合图片 ID
+    uint32_t pic_id = shape_color_pic_table[s_id][c_id];
+    
+    // 3. 调用你原有的函数更新整行
+    screen_update_row(target_row, name, pic_id, count);
+}
