@@ -62,7 +62,19 @@ scp -r rdk/vision_sorter/ root@<板子IP>:/root/vision_ws/
 
 ### 3. 启动顺序（两个终端）
 
-**终端 A：官方检测节点**
+> 板端已经放好了三个脚本（不在仓库里，是现场生成的）：
+> `stop_all.sh` 清场、`cam_watchdog.sh` 托管检测节点、`run_det.sh` / `run_sort.sh`。
+> **推荐直接用守护脚本，别手动起第二份 launch**（`/dev/video0` 是独占的）。
+
+```bash
+bash /root/vision_ws/stop_all.sh                       # 先清场（含孤儿 websocket）
+screen -dmS det /root/vision_ws/cam_watchdog.sh        # 检测节点交给守护托管
+screen -r det                                          # 看日志（Ctrl+A 再 D 退出，不停止）
+# 等 det.log 出现 30fps 之后，再起业务节点：
+screen -dmS sort /root/vision_ws/run_sort.sh
+```
+
+**终端 A：官方检测节点**（`run_det.sh` 里就是这段）
 ```bash
 source /opt/tros/humble/setup.bash
 export CAM_TYPE=usb
@@ -72,13 +84,15 @@ ros2 launch dnn_node_example dnn_node_example.launch.py \
   device:=/dev/video0
 ```
 
-**终端 B：视觉分拣节点**
+**终端 B：视觉分拣节点**（`run_sort.sh` 里就是这段）
 ```bash
 source /opt/tros/humble/setup.bash
 cd /root/vision_ws/vision_sorter
 python3 sort_vision_node.py            # 默认 auto_trigger=true
-# 无 STM32 时加串口模拟： python3 sort_vision_node.py --ros-args -p serial_sim:=true
+# 无 STM32 时台架演示（两道安全闸都要显式放开，见第十节「安全闸」）：
+#   python3 sort_vision_node.py --ros-args -p serial_sim:=true -p allow_uncalibrated:=true
 # 真机触发模式：          python3 sort_vision_node.py --ros-args -p auto_trigger:=false
+# 现场实测完节拍直接覆盖：  ... -p grab_cycle_s:=4.5
 ```
 
 预览：`http://<板子IP>:8000`（websocket 在 8080，nginx 代理到 8000）
@@ -225,6 +239,7 @@ PC 侧实时查看：`python tools/gantry_monitor.py --port COMx --csv trace.csv
 9. **去畸变开关和手眼标定必须同口径**：`hand_eye.json` 记了标定时有没有去畸变，节点启动会比对，不一致直接 `ERROR`。表现为"稳定地偏十几毫米"，现场极难定位。
 10. **`undistortPoints` 只能用在"像素→毫米"之前**：检测框来自带畸变的原图，颜色统计用带畸变 ROI 没关系（判色不看几何），但**坐标计算必须先去畸变**。
 11. **去畸变会让画面边缘"收"进来**：这组内参四角修正 202px，等于四周的内容整体往中心缩。物料如果贴在画面最边上，去畸变前后的 ROI 位置会差很多，别拿旧截图对像素。
+12. **未标定时节点不再"只警告照发"了**：现在直接拒绝下发（`safety.py`），日志会打 `BLOCKED_UNCALIBRATED`，`下发=` 计数不涨。这是刻意的——台架演示要加 `-p allow_uncalibrated:=true`，详见第十节。别把它当 bug 去查。
 
 ## 八、手眼标定：用棋盘格，不看夹爪
 
@@ -401,12 +416,119 @@ python tools/gantry_monitor.py --port COM7              # PC 上
 
 ```bash
 python tools/planar_calib.py --self-test          # 合成棋盘：检测→求解→对齐→3锚点→JSON
-python tools/test_protocol.py                     # 协议 + 标定 + 去畸变，80 项
+python tools/test_protocol.py                     # 协议 + 标定 + 去畸变 + 安全闸，99 项
 python tools/gantry_monitor.py --simulate         # 坐标帧解析器抗噪
 python tools/collect_anchors.py --simulate        # 锚点采集流程（含坏 CRC/半包）
+python tools/hsv_calib.py --data 标定图片          # HSV 阈值标定（见第九节）
 ```
 
-## 九、还没闭环的事
+## 九、颜色阈值标定：别手调，用照片算
+
+现场物料打印出来后，**每种颜色拍一叠照片**，用工具算出建议阈值——手调阈值没有客观
+依据，也说不清"到底会不会和别的颜色混"。
+
+### 9.1 拍照要求
+
+```
+标定图片/
+  green/  1.jpg  2.jpg ...      # 目录名 = config.py 里的英文色名
+  red/    1.jpg  2.jpg ...
+  blue/   ...
+```
+
+* 物料放在画面**正中间**，占画面 1/3 以上（工具只取中心 40% 区域统计）
+* 用**最终现场的光照**（补光灯开着），不要用手机闪光灯
+* 每种颜色 **≥8 张**，覆盖不同摆放角度
+* 格式 jpg/png 都行
+
+### 9.2 出报告
+
+```bash
+python tools/hsv_calib.py --data 标定图片 --report hsv_report.md
+```
+
+报告里有四块：
+
+| 块 | 内容 | 怎么用 |
+|---|---|---|
+| 一、H/S/V 分布 | 每种颜色的 H 区间、S/V 的 p1/p50/p99 | 看实测值，别猜 |
+| 二、冲突检查 | 哪两种颜色的 H 区间重叠、重叠几度 | 重叠就得靠 S/V 再分，或物料本身太接近 |
+| 三、当前阈值表现 | 每种颜色的**召回率**、被别的颜色抢走多少 | 召回 <60% 说明现在根本判不出来 |
+| 四、建议阈值 | 可直接粘贴进 `config.py` 的代码 | 复制替换 `COLOR_RANGES_HSV` |
+
+只看建议片段：`python tools/hsv_calib.py --data 标定图片 --apply`
+
+### 9.3 两个已知教训
+
+1. **S 下限不能拍脑袋抬到 70**：现场实测绿色物料的 S 中位数只有 **39**，
+   而 `config.py` 现在是 70 → 一上手就全判失败。工具给的建议是"实测 1% 分位数再留余量"。
+2. **红色的 H 跨 0°**（H≈178 和 H≈2 是同一个红）：工具用圆统计自动识别，
+   建议区间会拆成 `[0, hi]` + `RED_HSV_LOWER2` 两段，别自己拍一段 `[0,10]` 就完事。
+
+## 十、安全闸与故障处理（上线前必读）
+
+### 10.1 两道闸：默认都是"关着"的
+
+`sort_vision_node` 下发改坐标之前会过两道检查（`safety.py`），任何一道不过就**拒绝下发**，
+只打 ERROR 日志 + 发状态，不会偷偷把坐标发出去：
+
+| 闸 | 什么时候关 | 原因 |
+|---|---|---|
+| **标定闸** | `hand_eye.json` 不存在 | 此时坐标来自 `config.HAND_EYE_M` 占位值，是**假的**。龙门装好后一旦忘了标定就会满场乱走 |
+| **串口闸** | `/dev/ttyUSB0` 打不开或写失败 | 此时字节根本没发给 STM32，日志里却"看起来在抓" |
+
+启动时会连打两行横幅，一眼看出现在能不能动：
+
+```
+安全闸[标定]: 🔒 关闭中（未标定，拒绝下发；要演示请加 -p allow_uncalibrated:=true）
+安全闸[串口]: 🔒 故障（打不开，拒绝下发并周期性重试）
+```
+
+状态同时发到 `/sort/state`：`BLOCKED_UNCALIBRATED` / `BLOCKED_SERIAL_DOWN` /
+`SERIAL_ERROR` / `SERIAL_OK`。统计行里有 `安全闸拦截=` 和 `串口失败=` 两个计数。
+
+**台架演示要显式放开**（两道都要）：
+
+```bash
+python3 sort_vision_node.py --ros-args -p serial_sim:=true -p allow_uncalibrated:=true
+```
+
+> 也可以改 `config.py` 的 `SAFETY_REQUIRE_CALIB=False` / `ALLOW_UNCALIBRATED=True` /
+> `SERIAL_SIM_ON_FAIL=True`，但**上线前务必改回来**。
+
+### 10.2 串口掉了会自愈
+
+USB 转串口会掉（热插拔、供电、驱动）。节点行为：
+
+1. 写失败 → 立刻解除抓取窗口、`serial_ok=False`、状态 `SEND_FAIL`
+2. 每 `SERIAL_REOPEN_S`（默认 5s）重试打开一次
+3. 打开成功 → 状态 `SERIAL_OK`，继续正常下发
+
+`SERIAL_SIM_ON_FAIL=False`（默认）时**不会**静默退化成模拟模式——这条很重要，
+否则现场会出现"日志里抓得很欢、实际一个字节没发"的假象。
+
+### 10.3 标定热加载：不用重启节点
+
+```bash
+ros2 service call /sort/reload_calib std_srvs/srv/Trigger
+```
+
+重读 `hand_eye.json` 和 `camera_intrinsic.json`，并重新做一致性检查。
+标定完直接在终端跑这一句就行，节点和 `screen` 会话都不用动。
+
+### 10.4 节拍参数不用改代码
+
+```bash
+python3 sort_vision_node.py --ros-args -p grab_cycle_s:=4.5 -p grab_timeout_s:=10.0
+```
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `grab_cycle_s` | 6.0 | timer 模式下一次抓取循环多长。**实测办法**：放下料 → 手动发一条 `/sort/start` → 秒表记到机械臂完全退出视野，重复 5 次取中位数 +10% 余量 |
+| `grab_timeout_s` | 12.0 | byte 模式的兜底超时 |
+| `grab_done_mode` | timer | 改 `byte` 就走 STM32 的 `0x06` 完成字节 |
+
+## 十一、还没闭环的事
 
 - [ ] 手眼标定（棋盘格铺平 → `planar_calib.py` → 3 锚点或 `--probe`，验收平均 ≤5mm、最大 ≤8mm）
 - [ ] **确认 STM32 固件已按 10 字节（无 z）解析**，CRC 在索引 8、帧尾在索引 9
@@ -414,6 +536,12 @@ python tools/collect_anchors.py --simulate        # 锚点采集流程（含坏 
 - [ ] 实机确认去畸变后落点精度（中心 vs 边缘各抓一次，对比偏差）
 - [x] 相机去畸变接入 live 管线（`camera_model.py` + `_fire()`，含标定/推理口径一致性检查）
 - [x] RDK 侧坐标回传接收（解析 + `/gantry/pos` 话题 + 锚点采集工具）
-- [ ] 抓取循环时长标定：实测后把 `GRAB_CYCLE_S` 调准（或改 `GRAB_DONE_MODE="byte"` 由 STM32 回完成字节）
+- [ ] 抓取循环时长标定：实测后调 `grab_cycle_s`（或改 `GRAB_DONE_MODE="byte"`）
 - [ ] 串口协议与 STM32 固件对齐（视觉侧 AA55+CRC8 vs 控制侧 `chassis_driver.py` 的 0x6C 帧）
 - [ ] 决定是否重建 640×480 的 bin 以消除拉伸失真
+- [x] 安全闸：未标定 / 串口掉线一律拒绝下发（`safety.py`，含启动横幅与状态上报）
+- [x] 串口掉线自愈（周期性重连，不再静默退化成模拟模式）
+- [x] `/sort/reload_calib` 标定热加载服务
+- [x] 节拍参数命令行覆盖（`grab_cycle_s` / `grab_timeout_s` / `grab_done_mode`）
+- [x] HSV 阈值标定工具（`tools/hsv_calib.py`，照片 → 分位数 → 建议阈值 + 冲突检查）
+- [ ] 各颜色实物拍照片跑 `hsv_calib.py`，替换 `COLOR_RANGES_HSV`（等物料打印）

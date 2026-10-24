@@ -127,6 +127,23 @@ class Comm:
                 finally:
                     self.ser = None
 
+    def is_open(self):
+        """串口当前是否真的可用（USB 转串口拔掉后这里会变 False）。"""
+        try:
+            return self.ser is not None and bool(self.ser.is_open)
+        except Exception:
+            return False
+
+    def reopen(self):
+        """关掉重开一次（用于 USB 转串口热插拔后自愈）。返回是否成功。"""
+        self.close()
+        try:
+            self.open()
+            return self.is_open()
+        except Exception:
+            self.close()
+            return False
+
     # ---------------- 发送 ----------------
     def send_grab(self, shape_name, color_name, x_mm, y_mm,
                   wait_ack=None):
@@ -135,6 +152,9 @@ class Comm:
           wait_ack=False（默认）：只保证写出串口，立即返回 True
           wait_ack=True         ：等待帧级 ACK 0x06，失败重试 RETRY_TIMES 次
         返回: True 已发出（或收到 ACK）/ False 串口异常或 ACK 超时
+
+        写失败时会把句柄置空（is_open() 变 False），让上层知道"串口掉了"，
+        而不是继续往一个死句柄里写、日志里却一切正常。
         """
         if wait_ack is None:
             wait_ack = bool(getattr(C, "SEND_WAIT_ACK", False))
@@ -162,6 +182,7 @@ class Comm:
                     time.sleep(0.01)
             return False
         except Exception:
+            self.close()                 # 句柄已不可用，标记掉线，等上层重连
             return False
 
     # ---------------- 接收 ----------------

@@ -29,6 +29,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String, Bool
+from std_srvs.srv import Trigger
 from ai_msgs.msg import PerceptionTargets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,6 +37,7 @@ import config as C
 from color_classifier import classify_color
 import hand_eye
 import camera_model
+import safety
 from hand_eye import pixel_to_robot
 
 
@@ -73,7 +75,8 @@ class SerialWorker(threading.Thread):
                 self.node.get_logger().info(
                     "串口已发出 %.1fms | %s/%s (%d,%d) | 等待抓取完成(%s模式)" %
                     (dt, shape, color, round(x_mm), round(y_mm),
-                     getattr(C, "GRAB_DONE_MODE", "timer")))
+                     getattr(self.node, "grab_done_mode",
+                             getattr(C, "GRAB_DONE_MODE", "timer"))))
             else:
                 self.node.get_logger().error(
                     "串口发送失败 %.1fms | %s/%s" % (dt, shape, color))
@@ -92,8 +95,25 @@ class SortVisionNode(Node):
         # ---- 参数 ----
         self.declare_parameter("auto_trigger", bool(getattr(C, "AUTO_TRIGGER", True)))
         self.declare_parameter("serial_sim", bool(getattr(C, "SERIAL_SIM", False)))
+        # 安全闸：台架演示时可以显式绕过（默认不绕）
+        self.declare_parameter("allow_uncalibrated",
+                               bool(getattr(C, "ALLOW_UNCALIBRATED", False)))
+        # 抓取窗口时长：现场实测完可以不改代码，直接命令行覆盖
+        self.declare_parameter("grab_cycle_s",
+                               float(getattr(C, "GRAB_CYCLE_S", 6.0)))
+        self.declare_parameter("grab_timeout_s",
+                               float(getattr(C, "GRAB_TIMEOUT_S", 12.0)))
+        self.declare_parameter("grab_done_mode",
+                               str(getattr(C, "GRAB_DONE_MODE", "timer")))
         self.auto_trigger = bool(self.get_parameter("auto_trigger").value)
         self.serial_sim = bool(self.get_parameter("serial_sim").value)
+        self.allow_uncalibrated = bool(
+            self.get_parameter("allow_uncalibrated").value)
+        self.grab_cycle_s = float(self.get_parameter("grab_cycle_s").value)
+        self.grab_timeout_s = float(self.get_parameter("grab_timeout_s").value)
+        self.grab_done_mode = str(
+            self.get_parameter("grab_done_mode").value).lower()
+        self.require_calib = bool(getattr(C, "SAFETY_REQUIRE_CALIB", True))
 
         # ---- 帧缓存（按时间戳配对，避免用到过期画面）----
         self.frames = deque(maxlen=20)
@@ -112,6 +132,9 @@ class SortVisionNode(Node):
         self.stat_fire = 0                 # 实际下发次数
         self.stat_blank = 0                # 因抓取窗口被屏蔽的检测消息数
         self.stat_color_fail = 0
+        self.stat_blocked = 0              # 被安全闸拦下的次数
+        self.stat_send_fail = 0            # 串口写失败次数
+        self.last_reopen_t = 0.0           # 上次尝试重连串口的时刻
 
         # ---- 发布 ----
         self.pub_result = self.create_publisher(String, C.RESULT_TOPIC, 10)
@@ -135,9 +158,13 @@ class SortVisionNode(Node):
         self.create_subscription(Bool, "/sort/start", self.on_start, 10)
         self.create_subscription(Bool, "/sort/reset", self.on_reset, 10)
 
+        # 标定热加载：标定完不用重启节点
+        self.create_service(Trigger, "/sort/reload_calib", self.on_reload_calib)
+
         # ---- 串口 ----
         self.comm = None
         self.serial_worker = None
+        self.serial_ok = bool(self.serial_sim)     # 模拟模式视为"可用"
         self._init_serial()
 
         # ---- 定时器：状态心跳 + 统计 ----
@@ -149,9 +176,7 @@ class SortVisionNode(Node):
             "完成判定=%s(cycle=%.1fs timeout=%.1fs)"
             % (C.DET_TOPIC, C.IMG_TOPIC, C.RESULT_TOPIC,
                self.auto_trigger, self.serial_sim,
-               getattr(C, "GRAB_DONE_MODE", "timer"),
-               getattr(C, "GRAB_CYCLE_S", 6.0),
-               getattr(C, "GRAB_TIMEOUT_S", 12.0)))
+               self.grab_done_mode, self.grab_cycle_s, self.grab_timeout_s))
 
         # 手眼标定状态：没标定就大声报，别让人拿假坐标去驱动龙门
         hand_eye.warn_if_uncalibrated(self.get_logger())
@@ -162,6 +187,17 @@ class SortVisionNode(Node):
                 getattr(hand_eye, "META", {}) or {}, self.get_logger())
         except Exception as e:                        # noqa: BLE001
             self.get_logger().warn("去畸变/标定一致性检查失败: %s" % (e,))
+        # 安全闸状态：一眼看出"现在到底能不能动"
+        # 注意：两个调用必须在不同代码行 —— rclpy 按调用点缓存 severity，
+        # 同一行用两种 severity 会抛 ValueError。
+        for _level, _line in safety.describe_gates(
+                self.require_calib, self.allow_uncalibrated,
+                hand_eye.is_calibrated(), self.serial_ok, self.serial_sim,
+                getattr(C, "SERIAL_SIM_ON_FAIL", False)):
+            if _level == "warn":
+                self.get_logger().warn(_line)
+            else:
+                self.get_logger().info(_line)
         if getattr(C, "POS_ENABLE", False):
             self.get_logger().info(
                 "夹爪坐标回传已开启 | 帧头=0x%02X 长度=%d 话题=%s"
@@ -173,6 +209,7 @@ class SortVisionNode(Node):
     def _init_serial(self):
         if self.serial_sim:
             self.get_logger().warn("serial_sim=True：不连下位机，只打印指令")
+            self.serial_ok = True
             return
         try:
             from comm import Comm
@@ -180,21 +217,71 @@ class SortVisionNode(Node):
             self.comm.open()
             self.serial_worker = SerialWorker(self.comm, self)
             self.serial_worker.start()
+            self.serial_ok = True
             self.get_logger().info("串口已打开 %s @%d" %
                                    (C.SERIAL_PORT, C.SERIAL_BAUD))
         except Exception as e:
             self.comm = None
             self.serial_worker = None
-            self.get_logger().warn(
-                "串口打开失败（%s: %s），自动进入模拟模式" %
-                (type(e).__name__, e))
+            self.serial_ok = False
+            if getattr(C, "SERIAL_SIM_ON_FAIL", False):
+                # 台架模式：打不开就当模拟，照常打印
+                self.get_logger().warn(
+                    "串口打开失败（%s: %s），按 SERIAL_SIM_ON_FAIL=True "
+                    "退化为模拟模式（不会真的发给 STM32）" %
+                    (type(e).__name__, e))
+                self.serial_sim = True
+                self.serial_ok = True
+            else:
+                # 生产模式：明确报错，拒绝下发，并周期性重试
+                self.get_logger().error(
+                    "串口打开失败（%s: %s）—— 进入【串口故障】状态，拒绝下发。"
+                    "检查 %s 是否存在（ls /dev/ttyUSB*）、是否被占用，"
+                    "插好后会自动重连（每 %.0fs 试一次）" %
+                    (type(e).__name__, e, C.SERIAL_PORT,
+                       getattr(C, "SERIAL_REOPEN_S", 5.0)))
+                self._publish_state("SERIAL_ERROR")
+
+    def _try_reopen_serial(self):
+        """串口掉了以后周期性重连（USB 转串口热插拔能自愈）。"""
+        if self.serial_sim or self.serial_ok:
+            return
+        now = time.time()
+        period = float(getattr(C, "SERIAL_REOPEN_S", 5.0))
+        if now - self.last_reopen_t < period:
+            return
+        self.last_reopen_t = now
+        try:
+            from comm import Comm
+            if self.comm is None:
+                self.comm = Comm()
+            if self.comm.reopen():
+                self.serial_ok = True
+                self.serial_worker = SerialWorker(self.comm, self)
+                self.serial_worker.start()
+                self.get_logger().info("串口已恢复 %s @%d，继续正常下发" %
+                                       (C.SERIAL_PORT, C.SERIAL_BAUD))
+                self._publish_state("SERIAL_OK")
+            else:
+                self.get_logger().warn("串口仍打不开，%.0fs 后重试" % period,
+                                       throttle_duration_sec=15.0)
+        except Exception as e:                        # noqa: BLE001
+            self.comm = None
+            self.get_logger().warn("串口重连异常: %s: %s"
+                                   % (type(e).__name__, e),
+                                   throttle_duration_sec=15.0)
 
     # ---------------- 抓取窗口：如何判定"抓完了" ----------------
     def on_send_failed(self):
-        """串口发送失败：立即解除抓取窗口。"""
+        """串口发送失败：立即解除抓取窗口，并标记串口掉线等重连。"""
+        self.stat_send_fail += 1
+        self.serial_ok = False
         self.busy = False
         self.blank_until = 0.0
         self._publish_state("SEND_FAIL")
+        self.get_logger().error(
+            "串口写失败（USB 转串口掉了？），暂停下发并开始重连",
+            throttle_duration_sec=5.0)
 
     def on_grab_watchdog(self):
         """
@@ -212,7 +299,7 @@ class SortVisionNode(Node):
             return
         now = time.time()
         elapsed = now - self.grab_start
-        mode = str(getattr(C, "GRAB_DONE_MODE", "timer")).lower()
+        mode = self.grab_done_mode
 
         if mode == "byte":
             if self.comm is not None:
@@ -226,12 +313,13 @@ class SortVisionNode(Node):
                     # 1 字节协议：只表示"抓完了"
                     self._end_grab("DONE", elapsed)
                     return
-            if elapsed >= getattr(C, "GRAB_TIMEOUT_S", 12.0):
+            if elapsed >= self.grab_timeout_s:
                 self.get_logger().warn(
-                    "抓取完成字节超时(%.1fs)，强制解锁（下位机是否没发完成信号？）" % elapsed)
+                    "抓取完成字节超时(%.1fs)，强制解锁（下位机是否没发完成信号？）"
+                    % elapsed)
                 self._end_grab("TIMEOUT", elapsed)
         else:
-            if elapsed >= getattr(C, "GRAB_CYCLE_S", 6.0):
+            if elapsed >= self.grab_cycle_s:
                 self._end_grab("TIMER", elapsed)
 
     def _poll_gantry_pos(self):
@@ -369,13 +457,12 @@ class SortVisionNode(Node):
         """进入抓取窗口（屏蔽检测），按模式设定窗口上限。"""
         self.busy = True
         self.grab_start = now
-        mode = str(getattr(C, "GRAB_DONE_MODE", "timer")).lower()
-        if mode == "byte":
-            window = getattr(C, "GRAB_TIMEOUT_S", 12.0)
+        if self.grab_done_mode == "byte":
+            window = self.grab_timeout_s
             if self.comm is not None:
                 self.comm.drain()   # 清掉残留字节，避免把上一次的完成信号误当本次
         else:
-            window = getattr(C, "GRAB_CYCLE_S", 6.0)
+            window = self.grab_cycle_s
         self.blank_until = now + window + getattr(C, "BLANK_AFTER_DONE_S", 0.8)
         self._publish_state("GRABBING")
 
@@ -411,11 +498,42 @@ class SortVisionNode(Node):
         # planar_calib 标定时也是先去畸变再检角点，两边口径一致。
         cx_u, cy_u = camera_model.undistort_point(cx, cy)
         x_mm, y_mm, z_mm = pixel_to_robot(cx_u, cy_u)
-        if not hand_eye.is_calibrated():
-            self.get_logger().warn(
-                "手眼未标定：坐标由占位矩阵算出，是假值！仅用于打通链路，"
-                "禁止驱动龙门实动（标定见 BOARD_README 第八节）",
+
+        # ---- 安全闸：没标定 / 串口掉了，一律不许下发 ----
+        # 这两条以前只是打日志然后照发，龙门装好后一旦忘了标定就会满场乱走。
+        block = safety.check_downlink(
+            calibrated=hand_eye.is_calibrated(),
+            allow_uncalibrated=self.allow_uncalibrated,
+            serial_ok=self.serial_ok,
+            serial_sim=self.serial_sim) if self.require_calib else None
+        if block is None and not self.require_calib:
+            # 标定闸被 config 全局关掉时，串口闸仍然要生效
+            block = safety.check_downlink(
+                calibrated=True, allow_uncalibrated=True,
+                serial_ok=self.serial_ok, serial_sim=self.serial_sim)
+        if block is not None:
+            code, why = block
+            self.stat_blocked += 1
+            now_b = time.time()
+            self.last_fire_t = now_b          # 进冷却，避免 30Hz 刷屏
+            self._publish_state(code)
+            self.get_logger().error(
+                "拒绝下发[%s]：%s。坐标不发出（想台架演示见 "
+                "BOARD_README「安全闸」一节）" % (code, why),
                 throttle_duration_sec=10.0)
+            # 仍然发一条 result 供调试，但显式标记 blocked，下游应丢弃
+            self.pub_result.publish(String(data=json.dumps({
+                "stamp": "%d.%09d" % (det_msg.header.stamp.sec,
+                                      det_msg.header.stamp.nanosec),
+                "shape": target["shape"], "color": color,
+                "conf": round(target["conf"], 3),
+                "pixel": [round(cx, 1), round(cy, 1)],
+                "pixel_undist": [round(cx_u, 1), round(cy_u, 1)],
+                "robot_mm": [x_mm, y_mm, z_mm],
+                "blocked": code,
+                "blocked_reason": why,
+            }, ensure_ascii=False)))
+            return
 
         now = time.time()
         self.last_fire_t = now
@@ -454,24 +572,57 @@ class SortVisionNode(Node):
                 % (payload["shape_cn"], color, payload["conf"],
                    cx, cy, x_mm, y_mm))
 
-        if self.serial_worker is not None:
+        if self.serial_worker is not None and self.serial_ok:
             self.serial_worker.submit(target["shape"], color, x_mm, y_mm)
         else:
             self.get_logger().info(
                 "[SIM] 下发 %s/%s (%d,%d)（模拟抓取 %.1fs）" %
                 (target["shape"], color, round(x_mm), round(y_mm),
-                 getattr(C, "GRAB_CYCLE_S", 6.0)))
+                 self.grab_cycle_s))
 
-        self._publish_state("SENT" if self.serial_worker else "SIM_SENT")
+        self._publish_state("SENT" if (self.serial_worker and self.serial_ok)
+                            else "SIM_SENT")
+
+    # ---------------- 标定热加载 ----------------
+    def on_reload_calib(self, request, response):
+        """
+        重新读 hand_eye.json 和 camera_intrinsic.json，不用重启节点。
+
+            ros2 service call /sort/reload_calib std_srvs/srv/Trigger
+        """
+        try:
+            old = hand_eye.describe()
+            hand_eye.reload()
+            new = hand_eye.describe()
+            self.require_calib = bool(getattr(C, "SAFETY_REQUIRE_CALIB", True))
+            ok = camera_model.check_hand_eye_consistency(
+                getattr(hand_eye, "META", {}) or {}, self.get_logger())
+            msg = "重载完成 | 之前: %s | 现在: %s" % (old, new)
+            if hand_eye.is_calibrated() and not self.allow_uncalibrated:
+                msg += " | 标定闸已放开，可以正常下发"
+            self.get_logger().info(msg)
+            response.success = True if ok is not False else False
+            response.message = msg
+        except Exception as e:                        # noqa: BLE001
+            msg = "重载失败: %s: %s" % (type(e).__name__, e)
+            self.get_logger().error(msg)
+            response.success = False
+            response.message = msg
+        return response
 
     def _publish_state(self, s):
         self.pub_state.publish(String(data=s))
 
     def on_timer(self):
+        self._try_reopen_serial()
         self.get_logger().info(
-            "统计: 检测消息=%d 含目标=%d 下发=%d 屏蔽=%d 颜色失败=%d 帧缓存=%d busy=%s"
+            "统计: 检测消息=%d 含目标=%d 下发=%d 屏蔽=%d 颜色失败=%d "
+            "安全闸拦截=%d 串口失败=%d 帧缓存=%d busy=%s 串口=%s"
             % (self.stat_det, self.stat_hit, self.stat_fire, self.stat_blank,
-               self.stat_color_fail, len(self.frames), self.busy))
+               self.stat_color_fail, self.stat_blocked, self.stat_send_fail,
+               len(self.frames), self.busy,
+               "模拟" if self.serial_sim else
+               ("正常" if self.serial_ok else "故障")))
 
     def destroy_node(self):
         if self.serial_worker:

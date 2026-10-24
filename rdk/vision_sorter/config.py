@@ -191,3 +191,23 @@ POS_TOPIC = "/gantry/pos"         # POS_ENABLE=True 时发布的调试话题（J
 # ============ 状态机 ============
 GRAB_DONE_WAIT_S = 3.0
 CAMERA_WARMUP_S = 1.0
+
+# ============ 安全策略（上线前必须确认）============
+# 安全闸：手眼没标定时【禁止下发坐标】。
+#
+# 为什么需要：没标定时算出来的坐标来自 config.HAND_EYE_M 的占位值，是假的。
+# 以前只是打 ERROR 日志然后照发不误 —— 龙门装好以后，一旦忘了标定就直接乱走，
+# 这种事故代价远大于少抓一颗料。
+#
+# 想在没有 hand_eye.json 的情况下演示下发（台架调试）：
+#   python3 sort_vision_node.py --ros-args -p allow_uncalibrated:=true
+SAFETY_REQUIRE_CALIB = True
+ALLOW_UNCALIBRATED = False     # 等价于命令行 -p allow_uncalibrated:=true，改这里也行
+
+# 串口打不开时的策略。
+#   False（生产推荐）：进"串口故障"状态，拒绝下发并每 5 秒重试，日志明确报错
+#   True （台架方便）  ：静默进模拟模式，照常打印指令
+# 注意：True 的问题是"看起来在抓、其实根本没发给 STM32"，现场很容易误判。
+SERIAL_SIM_ON_FAIL = False
+# 串口掉了以后多久重试打开一次（插拔 USB 转串口后能自愈）
+SERIAL_REOPEN_S = 5.0

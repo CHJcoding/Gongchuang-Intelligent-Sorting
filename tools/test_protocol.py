@@ -37,6 +37,7 @@ import comm                  # noqa: E402
 import hand_eye              # noqa: E402
 import camera_model          # noqa: E402
 import planar_calib          # noqa: E402
+import safety                # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -433,13 +434,113 @@ def test_camera_model():
           camera_model.check_hand_eye_consistency({}) is None)
 
 
+def test_safety():
+    """安全闸：没标定 / 串口掉了 必须拒绝下发（这是防事故的最后一道）。"""
+    # 未标定 -> 拒绝
+    r = safety.check_downlink(False)
+    check("安全闸：未标定 -> 拒绝", r is not None)
+    check("安全闸：拒绝原因=UNCALIBRATED",
+          r is not None and r[0] == safety.REASON_UNCALIBRATED)
+    # 已标定 -> 放行
+    check("安全闸：已标定+串口正常 -> 放行", safety.check_downlink(True) is None)
+    # 显式绕过
+    check("安全闸：allow_uncalibrated=true 可绕过标定闸",
+          safety.check_downlink(False, allow_uncalibrated=True) is None)
+    # 串口掉线
+    r = safety.check_downlink(True, serial_ok=False)
+    check("安全闸：串口掉了 -> 拒绝",
+          r is not None and r[0] == safety.REASON_SERIAL_DOWN)
+    check("安全闸：serial_sim 是主动选的，不算串口故障",
+          safety.check_downlink(True, serial_ok=False, serial_sim=True) is None)
+    # 两个都坏时先报标定（更严重的那个）
+    r = safety.check_downlink(False, serial_ok=False)
+    check("安全闸：两个都坏 -> 先报标定",
+          r is not None and r[0] == safety.REASON_UNCALIBRATED)
+    # 原因码有人话
+    check("安全闸：原因码可翻译",
+          "标定" in safety.human(safety.REASON_UNCALIBRATED))
+    # 启动横幅（返回 (level, 文本)，level 决定用哪一行 logger 调用）
+    lines = safety.describe_gates(True, False, False, False, False)
+    check("启动横幅：未标定+串口故障 -> 两条都带🔒",
+          len(lines) == 2 and all("🔒" in s for _l, s in lines))
+    check("启动横幅：两条都该用 warn 级别",
+          len(lines) == 2 and all(lv == "warn" for lv, _s in lines))
+    lines = safety.describe_gates(True, False, True, True, False)
+    check("启动横幅：全部就绪 -> 两条都带✅",
+          len(lines) == 2 and all("✅" in s for _l, s in lines))
+    check("启动横幅：全部就绪 -> 两条都该用 info 级别",
+          len(lines) == 2 and all(lv == "info" for lv, _s in lines))
+    check("启动横幅：台架绕过要显式提示",
+          any("绕过" in s for _l, s in
+              safety.describe_gates(True, True, False, True, False)))
+    # 混合级别：节点必须能分别走两个固定调用点（回归 rclpy 的 severity 缓存）
+    mixed = dict((lv, s) for lv, s in
+                 safety.describe_gates(True, True, False, True, True))
+    check("启动横幅：混合级别时两种 level 都存在",
+          set(mixed) == {"warn", "info"})
+
+
+def test_hsv_calib():
+    """HSV 标定助手：H 的周期是 180（不是 360），跨 0° 必须处理对。"""
+    if cv2 is None:
+        print("  (没装 opencv，跳过)")
+        return
+    try:
+        import hsv_calib as HC
+    except ImportError:
+        print("  (找不到 hsv_calib.py，跳过)")
+        return
+
+    lo, hi, wrapped = HC.circ_range(np.array([115, 116, 117], np.uint8))
+    check("H 圆统计：115 附近 -> 区间包住 115、不跨 0°",
+          lo <= 115 <= hi and not wrapped, "got %s" % ((lo, hi, wrapped),))
+
+    lo, hi, wrapped = HC.circ_range(np.array([177, 179, 0, 1, 3], np.uint8))
+    check("H 圆统计：红色跨 0° -> wrapped 且 lo>hi",
+          wrapped and lo > hi, "got %s" % ((lo, hi, wrapped),))
+    # 跨 0° 的区间要能正确判断"和自身完全重叠"
+    check("H 重叠：跨 0° 区间和自己重叠 > 6°",
+          HC.overlap_h((170, 10, True), (170, 10, True)) > 6)
+    check("H 重叠：绿色与蓝色不重叠",
+          HC.overlap_h((40, 85, False), (100, 125, False)) == 0)
+
+    # 端到端：合成图片 -> 建议阈值 -> 能盖住自己的色相
+    import tempfile
+    import json as _json
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = {"green": 60, "blue": 115}
+        for name, h in spec.items():
+            d = os.path.join(tmp, name)
+            os.makedirs(d, exist_ok=True)
+            img = np.zeros((480, 640, 3), np.uint8)
+            img[140:340, 190:450] = (h, 200, 140)
+            cv2.imwrite(os.path.join(d, "a.png"),
+                        cv2.cvtColor(img, cv2.COLOR_HSV2BGR))
+        colors = HC.collect_pixels(tmp)
+        check("合成数据：两种颜色都读到", set(colors) == {"green", "blue"})
+        sugg = HC.suggest(colors)
+        ok = True
+        for name, h in spec.items():
+            lo, hi, wrapped = sugg[name]["h"]
+            if wrapped:
+                ok = ok and (h >= lo or h <= hi)
+            else:
+                ok = ok and (lo <= h <= hi)
+        check("合成数据：建议区间盖住真实色相", ok)
+        check("合成数据：颜色互不冲突", HC.conflicts(sugg) == [])
+        snippet = HC.config_snippet(sugg)
+        check("config 片段可直接粘贴（含字典头尾）",
+              snippet.startswith("COLOR_RANGES_HSV = {") and
+              snippet.rstrip().endswith("}"))
+
+
 def main():
     print("=" * 70)
     print("离线单测：协议 + 标定链路")
     print("=" * 70)
     for fn in (test_downlink, test_pos_frame, test_done_paths,
                test_hand_eye, test_math, test_aligned_residual,
-               test_camera_model):
+               test_camera_model, test_safety, test_hsv_calib):
         print("\n--- %s ---" % fn.__name__)
         try:
             fn()
