@@ -1,4 +1,4 @@
-﻿# ---- 数据与模型（体积大，不入库）----
+# ---- 数据与模型（体积大，不入库）----
 mydata/
 **/dataset/
 *.pt
@@ -19,3 +19,9 @@ weights/
 # ---- 采集/标定原始图 ----
 **/images/
 **/labels/
+
+# ---- 现场标定产物（每台机器不同，不入库）----
+hand_eye.json
+hand_eye.json.tmp
+*_corners.png
+trace.csv

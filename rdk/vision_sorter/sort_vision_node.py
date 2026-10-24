@@ -34,6 +34,7 @@ from ai_msgs.msg import PerceptionTargets
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C
 from color_classifier import classify_color
+import hand_eye
 from hand_eye import pixel_to_robot
 
 
@@ -115,6 +116,11 @@ class SortVisionNode(Node):
         self.pub_result = self.create_publisher(String, C.RESULT_TOPIC, 10)
         self.pub_state = self.create_publisher(String, "/sort/state", 10)
         self.pub_debug = self.create_publisher(String, "/sort/debug", 10)
+        # 夹爪坐标回显（POS_ENABLE=True 才建话题，避免没开时挂个空话题）
+        self.pub_pos = None
+        if getattr(C, "POS_ENABLE", False):
+            self.pub_pos = self.create_publisher(
+                String, getattr(C, "POS_TOPIC", "/gantry/pos"), 10)
 
         # ---- 订阅 ----
         img_qos = QoSProfile(
@@ -145,6 +151,15 @@ class SortVisionNode(Node):
                getattr(C, "GRAB_DONE_MODE", "timer"),
                getattr(C, "GRAB_CYCLE_S", 6.0),
                getattr(C, "GRAB_TIMEOUT_S", 12.0)))
+
+        # 手眼标定状态：没标定就大声报，别让人拿假坐标去驱动龙门
+        hand_eye.warn_if_uncalibrated(self.get_logger())
+        if getattr(C, "POS_ENABLE", False):
+            self.get_logger().info(
+                "夹爪坐标回传已开启 | 帧头=0x%02X 长度=%d 话题=%s"
+                % (getattr(C, "POS_FRAME_HEAD", 0x07),
+                   getattr(C, "POS_FRAME_LEN", 6),
+                   getattr(C, "POS_TOPIC", "/gantry/pos")))
 
     # ---------------- 串口 ----------------
     def _init_serial(self):
@@ -179,7 +194,12 @@ class SortVisionNode(Node):
 
           timer 模式：发出去后按 GRAB_CYCLE_S 定时解锁（STM32 无需任何回报）
           byte  模式：等 STM32 在动作结束时回的 GRAB_DONE_BYTE，超时则兜底解锁
+
+        顺带把 STM32 回传的夹爪坐标取出来发话题（POS_ENABLE=True 时）。
+        注意：坐标回传和完成字节共用同一条串口，必须都在这里轮询，
+        由 comm 的统一解析泵拆分，谁也不会吃掉谁的字节。
         """
+        self._poll_gantry_pos()
         if not self.busy:
             return
         now = time.time()
@@ -205,6 +225,20 @@ class SortVisionNode(Node):
         else:
             if elapsed >= getattr(C, "GRAB_CYCLE_S", 6.0):
                 self._end_grab("TIMER", elapsed)
+
+    def _poll_gantry_pos(self):
+        """取 STM32 回传的夹爪坐标并发话题（POS_ENABLE=False 时直接返回）。"""
+        if not getattr(C, "POS_ENABLE", False) or self.comm is None:
+            return
+        try:
+            pos = self.comm.poll_position()
+        except Exception:
+            return
+        if pos is None or self.pub_pos is None:
+            return
+        payload = {"x": pos[0], "y": pos[1], "seq": self.comm.position_seq}
+        self.pub_pos.publish(String(data=json.dumps(payload,
+                                                   ensure_ascii=False)))
 
     def _end_grab(self, reason, elapsed, status=None):
         """
@@ -365,6 +399,11 @@ class SortVisionNode(Node):
 
         cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
         x_mm, y_mm, z_mm = pixel_to_robot(cx, cy)
+        if not hand_eye.is_calibrated():
+            self.get_logger().warn(
+                "手眼未标定：坐标由占位矩阵算出，是假值！仅用于打通链路，"
+                "禁止驱动龙门实动（标定见 BOARD_README 第八节）",
+                throttle_duration_sec=10.0)
 
         now = time.time()
         self.last_fire_t = now

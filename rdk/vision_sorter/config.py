@@ -62,11 +62,29 @@ RED_HSV_LOWER2 = [(170, 90, 50), (179, 255, 255)]
 MIN_PIXEL_RATIO = 0.15
 
 # ============ 手眼标定 ============
-# [x_mm, y_mm] = M @ [u, v, 1]，标定后填这里
+# [x_mm, y_mm] = M @ [u, v, 1]
+#
+# 矩阵来源优先级（见 hand_eye.py）：
+#   1. 环境变量 GC_HAND_EYE_JSON
+#   2. 本文件的 HAND_EYE_JSON（非空时）
+#   3. vision_sorter/hand_eye.json（tools/planar_calib.py 默认输出到仓库根）
+#   4. 当前工作目录 hand_eye.json
+#   5. /root/vision_ws/hand_eye.json（板端约定位置）
+#   6. 以上都没有 -> 用下面的 HAND_EYE_M 占位值，hand_eye.CALIBRATED=False
+#
+# ⚠ 下面这组是【占位值】，按相机高度猜的，不是实测：
+#   - 比例 0.038 mm/px（约 26 px/mm），y 轴取负（画面向下 -> 坐标减小）
+#   - 只能用来打通链路，标定前别拿它驱动龙门实动！
+# 标定方法见 rdk/vision_sorter/BOARD_README.md 第九节。
 HAND_EYE_M = [
     [0.038, 0.000, -24.5],
     [0.000, -0.038, 410.0],
 ]
+HAND_EYE_M_IS_PLACEHOLDER = True   # 标定后由 hand_eye.json 覆盖，本行不用改
+
+# 想固定 JSON 路径就填绝对路径；留空则按上面的优先级自动找
+HAND_EYE_JSON = ""       # 例："/root/vision_ws/hand_eye.json"
+
 Z_OFFSET = 0.0
 
 # ============ ROS2 话题（D1 架构：订阅官方 dnn_node_example）============
@@ -123,6 +141,28 @@ GRAB_STATUS_NAMES = {
     GRAB_STATUS_ESTOP: "急停",
     GRAB_STATUS_OTHER: "其它错误",
 }
+
+# ============ 夹爪坐标回传（方案B：STM32 -> RDK，已实现，默认不启用）============
+# 用途：手眼标定要"真值"。RDK 侧只有像素，坐标真值只在 STM32 手里。
+# 让 STM32 周期性（或按请求）把当前夹爪坐标回上来，标定就不用靠人眼抄数。
+#
+# 上行帧（6 字节，与下行同一套 CRC）：
+#   [0]   0x07        帧头
+#   [1:3] x_int16 LE  当前 X(mm)，有符号
+#   [3:5] y_int16 LE  当前 Y(mm)，有符号
+#   [5]   crc8        校验：对前 5 字节（0x07 + x + y）算，poly 0x07
+#
+# STM32 侧注意事项：
+#   - 和已有的 0x06 完成字节走同一条串口，交替发出即可，RDK 侧统一解析
+#   - 建议 20Hz 以上；RDK 侧只保留最新一帧，丢帧无所谓
+#   - 坐标必须是【和下行帧同一个坐标系】，否则标定结果会整体平移
+#
+# ⚠ 固件没做之前必须保持 False：否则 RDK 收不到 0x07，标定工具会一直等超时。
+POS_ENABLE = False                # ← 现在注释着不启用
+# POS_ENABLE = True               # ← 等 STM32 固件会发 0x07 帧了，换成这一行
+POS_FRAME_HEAD = 0x07             # 坐标帧帧头
+POS_FRAME_LEN = 6                 # 坐标帧总长度
+POS_TOPIC = "/gantry/pos"         # POS_ENABLE=True 时发布的调试话题（JSON 字符串）
 
 # ============ 状态机 ============
 GRAB_DONE_WAIT_S = 3.0

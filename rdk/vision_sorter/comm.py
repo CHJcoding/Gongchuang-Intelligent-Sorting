@@ -14,15 +14,24 @@
 
 注：z 轴已按需求移除（STM32 侧自行决定抓取高度），帧长 11 -> 10 字节。
 
-上行（STM32 -> RDK），按 config.GRAB_DONE_MODE：
-  * "timer" 模式：STM32 什么都不用回（纯开环定时解锁）
-  * "byte"  模式：抓取动作【结束时】回 1 字节 GRAB_DONE_BYTE（0x06）
-                 注意这是"抓完了"的动作级信号，不是"收到帧了"的帧级 ACK。
-                 若 config.GRAB_STATUS_ENABLE=True（当前未启用），则回 2 字节：
-                     0x06 + status    status: 0x00=成功 0x01=空抓 0x02=急停 0x03=其它
+上行（STM32 -> RDK），三种包可以混在同一条串口上，RDK 侧统一解析：
+  1) 抓取完成 1 字节：0x06
+       仅 GRAB_DONE_MODE == "byte" 时被调用。这是"抓完了"的动作级信号，
+       不是"收到帧了"的帧级 ACK。
+  2) 抓取完成 + 结果 2 字节：0x06 + status
+       status: 0x00=成功 0x01=空抓/失败 0x02=急停 0x03=其它
+       仅 GRAB_STATUS_ENABLE=True 时启用（当前未启用）。
+  3) 夹爪坐标 6 字节：0x07 | x int16 LE | y int16 LE | crc8
+       crc8 覆盖前 5 字节，poly 0x07（与下行同一算法）。
+       仅 POS_ENABLE=True 时被节点消费（当前未启用），但解析器始终兼容，
+       收到就存进 latest_position，不消费也不会丢其它包。
+
+注意：三种包必须由同一个解析泵处理，否则谁先读谁把别人的字节吃掉。
+本模块所有 poll_* 都走 _pump()，可以任意顺序、任意频率交替调用。
 
 另外保留可选的帧级 ACK 逻辑（SEND_WAIT_ACK=True 时启用，默认关闭）。
 """
+import struct
 import threading
 import time
 
@@ -39,6 +48,13 @@ except ImportError:          # PC 上没装 pyserial 时仍可 import 本模块�
 SHAPE_ID = {name: i for i, name in enumerate(C.SHAPE_NAMES)}
 # 颜色编号用 config.COLOR_IDS 显式固定，不依赖 COLOR_RANGES_HSV 的字典顺序
 COLOR_ID = dict(getattr(C, "COLOR_IDS", {}))
+
+# 上行包标识
+DONE_BYTE = int(getattr(C, "GRAB_DONE_BYTE", 0x06))
+POS_HEAD = int(getattr(C, "POS_FRAME_HEAD", 0x07))
+POS_LEN = int(getattr(C, "POS_FRAME_LEN", 6))
+STATUS_NAMES = dict(getattr(C, "GRAB_STATUS_NAMES", {}))
+RX_BUF_MAX = 512             # 缓冲区上限，防止串口噪声把内存撑爆
 
 
 def _crc8(data: bytes) -> int:
@@ -67,8 +83,18 @@ def build_frame(shape_name, color_name, x_mm, y_mm) -> bytes:
 
 def struct_pack_hh(a, b) -> bytes:
     """struct.pack('<hh', a, b) 的轻量替代。"""
-    import struct
     return struct.pack("<hh", a, b)
+
+
+def build_pos_frame(x_mm, y_mm) -> bytes:
+    """组一帧"夹爪坐标"上行帧（6 字节）。
+
+    这是给【单测和 STM32 工程师当参考实现】用的：STM32 侧应按同样字节序发出。
+    """
+    x_i = max(-32768, min(32767, int(round(x_mm))))
+    y_i = max(-32768, min(32767, int(round(y_mm))))
+    body = bytes([POS_HEAD]) + struct.pack("<hh", x_i, y_i)
+    return body + bytes([_crc8(body)])
 
 
 class Comm:
@@ -76,7 +102,11 @@ class Comm:
         self.ser = None
         self.lock = threading.Lock()      # 写线程(发送) 与 ROS定时器(读完成字节) 共用串口
         self.done_seen = False
-        self._status_buf = b""            # 2 字节协议的分包缓存（未启用时不会用到）
+        self.done_status = None           # 2 字节协议的结果码；1 字节协议为 None
+        self._rx = bytearray()            # 统一接收缓冲（所有上行包共用）
+        self.latest_position = None       # (x_mm, y_mm)，只保留最新一帧
+        self.position_seq = 0             # 累计收到多少帧坐标（调试/丢帧观察）
+        self.rx_bad = 0                   # CRC 失败 / 半包丢弃计数
 
     # ---------------- 打开/关闭 ----------------
     def open(self):
@@ -147,54 +177,110 @@ class Comm:
             except Exception:
                 return b""
 
+    # ---------------- 统一接收解析 ----------------
+    def _pump(self):
+        """把串口里现有字节全部读进缓冲，然后解析出所有完整包。"""
+        while True:
+            chunk = self._read_nonblock(64)
+            if not chunk:
+                break
+            self._rx.extend(chunk)
+        if len(self._rx) > RX_BUF_MAX:          # 噪声太多时只保留尾部
+            del self._rx[:-RX_BUF_MAX // 2]
+        self._parse_rx()
+
+    def _parse_rx(self):
+        """按 0x06 / 0x07 逐字节扫描，拼出完整包后消费。
+
+        半包（字节不够）保留在缓冲里等下一次；CRC 错的坐标帧丢 1 字节重新同步。
+        """
+        buf = self._rx
+        i, n = 0, len(buf)
+        status_mode = bool(getattr(C, "GRAB_STATUS_ENABLE", False))
+
+        while i < n:
+            b = buf[i]
+
+            # ---- 抓取完成：0x06 [status] ----
+            if b == DONE_BYTE:
+                if status_mode:
+                    if i + 1 >= n:
+                        break                       # 等 status 字节
+                    st = buf[i + 1]
+                    if st in STATUS_NAMES:          # 合法结果码：0x06 + 结果
+                        self.done_seen = True
+                        self.done_status = st
+                        i += 2
+                        continue
+                    # 非法结果码：只当 1 字节完成信号，不吞下一字节
+                    self.done_seen = True
+                    self.done_status = None
+                    i += 1
+                    continue
+                self.done_seen = True
+                self.done_status = None
+                i += 1
+                continue
+
+            # ---- 夹爪坐标：0x07 x(2) y(2) crc(1) ----
+            if b == POS_HEAD:
+                if i + POS_LEN > n:
+                    break                           # 半包，等后续字节
+                body = bytes(buf[i:i + POS_LEN - 1])
+                crc = buf[i + POS_LEN - 1]
+                if _crc8(body) == crc:
+                    x = struct.unpack("<h", body[1:3])[0]
+                    y = struct.unpack("<h", body[3:5])[0]
+                    self.latest_position = (x, y)
+                    self.position_seq += 1
+                    i += POS_LEN
+                    continue
+                self.rx_bad += 1
+                i += 1                              # CRC 错：丢 1 字节重新找包头
+                continue
+
+            i += 1                                  # 杂字节
+
+        del buf[:i]                                 # 只保留没解析完的半包
+
     def poll_done(self) -> bool:
-        """
-        非阻塞检查是否收到"抓取完成"字节。
-        收到即返回 True；同时清掉其它杂字节（避免累积）。
-        仅 GRAB_DONE_MODE == "byte" 时被调用。
-        """
-        data = self._read_nonblock(16)
-        if not data:
-            return False
-        if C.GRAB_DONE_BYTE in data:
-            self.done_seen = True
+        """非阻塞检查是否收到"抓取完成"字节；取到即消费（同一字节不会触发两次）。"""
+        self._pump()
+        if self.done_seen:
+            self.done_seen = False
             return True
         return False
 
     def poll_done_status(self):
         """
-        【2 字节协议，默认未启用】解析 0x06 + status。
-        返回 (seen: bool, status: int | None)。
-        只在 config.GRAB_STATUS_ENABLE=True 时由节点调用。
-        做了分包缓存：0x06 和 status 分两次到达也能拼上。
+        【2 字节协议，默认未启用】取 (seen, status | None)。
+        status: 0x00=成功 0x01=空抓 0x02=急停 0x03=其它；1 字节协议下为 None。
         """
-        chunk = self._read_nonblock(32)
-        if chunk:
-            self._status_buf += chunk
-        while len(self._status_buf) >= 2:
-            i = self._status_buf.find(bytes([C.GRAB_DONE_BYTE]))
-            if i < 0:
-                self._status_buf = self._status_buf[-1:]   # 只留最后 1 字节，防误伤
-                return False, None
-            if i + 1 < len(self._status_buf):
-                status = self._status_buf[i + 1]
-                self._status_buf = b""
-                return True, status
-            self._status_buf = self._status_buf[i:]        # 只有 0x06，等下一字节
-            return False, None
+        self._pump()
+        if self.done_seen:
+            self.done_seen = False
+            return True, self.done_status
         return False, None
+
+    def poll_position(self):
+        """非阻塞取最新夹爪坐标 (x_mm, y_mm)；没有新帧返回 None。"""
+        self._pump()
+        pos = self.latest_position
+        self.latest_position = None
+        return pos
 
     def drain(self):
         """丢弃输入缓冲里的残留字节（开始新一次抓取前调用）。"""
         with self.lock:
-            if self.ser is None:
-                return
-            try:
-                self.ser.reset_input_buffer()
-            except Exception:
-                pass
+            if self.ser is not None:
+                try:
+                    self.ser.reset_input_buffer()
+                except Exception:
+                    pass
         self.done_seen = False
-        self._status_buf = b""
+        self.done_status = None
+        self._rx = bytearray()
+        self.latest_position = None
 
 
 if __name__ == "__main__":
