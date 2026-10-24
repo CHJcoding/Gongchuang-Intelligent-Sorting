@@ -152,7 +152,7 @@ GRAB_DONE_MODE     = "byte"
 |---|---|---|
 | 0-1 | `AA 55` | 帧头 |
 | 2 | shape_id | 0=BQ 1=LK 2=SLZ 3=SMT 4=WLZ 5=YZ 6=YZHU，未知=255 |
-| 3 | color_id | 0=red 1=orange 2=yellow 3=green 4=cyan 5=blue 6=purple 7=magenta 8=black 9=white |
+| 3 | color_id | 0=red 1=orange 2=yellow 3=green 4=cyan 5=blue 6=purple **7=预留** 8=black 9=white |
 | 4-5 | x int16 小端 | 机械臂 X(mm) |
 | 6-7 | y int16 小端 | 机械臂 Y(mm) |
 | 8 | crc8 | 对字节 0~7，poly 0x07 |
@@ -163,7 +163,9 @@ GRAB_DONE_MODE     = "byte"
 > **z 轴已移除**（2026-10-24）：抓取高度由 STM32 自己决定，帧长 11 → 10 字节，CRC 位置 9 → 8。
 > 改前后务必确认 STM32 固件已按 10 字节解析，否则会错位。
 >
-> ⚠️ `color_id` 由 `COLOR_RANGES_HSV` 的 **dict 插入顺序**生成。调阈值可以，**增删 key 或换顺序会让编号错位**。
+> ⚠️ `color_id` 由 `config.py` 的 **`COLOR_IDS`** 显式固定，**不再**跟随 `COLOR_RANGES_HSV` 的
+> 字典顺序。所以增删/重排 HSV 区间**不会**让编号漂移——这是 2026-10-24 删掉 magenta 时
+> 特意解耦的（7 号保留不用，避免 black/white 从 8/9 前移）。改编号只改 `COLOR_IDS`。
 
 ## 六、板端实测数据（2026-10-21）
 

@@ -37,7 +37,8 @@ except ImportError:          # PC 上没装 pyserial 时仍可 import 本模块�
 
 # 形状/颜色和编号的映射，要和下位机固件里的表一致
 SHAPE_ID = {name: i for i, name in enumerate(C.SHAPE_NAMES)}
-COLOR_ID = {name: i for i, name in enumerate(C.COLOR_RANGES_HSV.keys())}
+# 颜色编号用 config.COLOR_IDS 显式固定，不依赖 COLOR_RANGES_HSV 的字典顺序
+COLOR_ID = dict(getattr(C, "COLOR_IDS", {}))
 
 
 def _crc8(data: bytes) -> int:

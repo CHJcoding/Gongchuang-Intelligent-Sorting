@@ -17,7 +17,7 @@
    ```
    pip install opencv-python numpy torch pyserial
    python camera.py          # 先看相机画面
-   python color_tuner.py    # 现场补光下调10种颜色的HSV区间，填回config.py
+   python color_tuner.py    # 现场补光下调各颜色HSV区间（现为9色），填回config.py
    python hand_eye.py        # 打印标定矩阵，填回config.py
    python state_machine.py   # use_comm=False 先不连下位机，看检测框对不对
    ```
