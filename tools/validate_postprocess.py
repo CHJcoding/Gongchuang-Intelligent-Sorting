@@ -48,7 +48,7 @@ from utils.general import non_max_suppression             # noqa: E402
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "vision_sorter"))
+sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "rdk", "vision_sorter"))
 import yolo_postprocess as yp                             # noqa: E402
 
 GC = r"C:\Users\34559\Desktop\GC"
