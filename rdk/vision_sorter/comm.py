@@ -17,6 +17,8 @@
   * "timer" 模式：STM32 什么都不用回（纯开环定时解锁）
   * "byte"  模式：抓取动作【结束时】回 1 字节 GRAB_DONE_BYTE（0x06）
                  注意这是"抓完了"的动作级信号，不是"收到帧了"的帧级 ACK。
+                 若 config.GRAB_STATUS_ENABLE=True（当前未启用），则回 2 字节：
+                     0x06 + status    status: 0x00=成功 0x01=空抓 0x02=急停 0x03=其它
 
 另外保留可选的帧级 ACK 逻辑（SEND_WAIT_ACK=True 时启用，默认关闭）。
 """
@@ -73,6 +75,7 @@ class Comm:
         self.ser = None
         self.lock = threading.Lock()      # 写线程(发送) 与 ROS定时器(读完成字节) 共用串口
         self.done_seen = False
+        self._status_buf = b""            # 2 字节协议的分包缓存（未启用时不会用到）
 
     # ---------------- 打开/关闭 ----------------
     def open(self):
@@ -157,6 +160,29 @@ class Comm:
             return True
         return False
 
+    def poll_done_status(self):
+        """
+        【2 字节协议，默认未启用】解析 0x06 + status。
+        返回 (seen: bool, status: int | None)。
+        只在 config.GRAB_STATUS_ENABLE=True 时由节点调用。
+        做了分包缓存：0x06 和 status 分两次到达也能拼上。
+        """
+        chunk = self._read_nonblock(32)
+        if chunk:
+            self._status_buf += chunk
+        while len(self._status_buf) >= 2:
+            i = self._status_buf.find(bytes([C.GRAB_DONE_BYTE]))
+            if i < 0:
+                self._status_buf = self._status_buf[-1:]   # 只留最后 1 字节，防误伤
+                return False, None
+            if i + 1 < len(self._status_buf):
+                status = self._status_buf[i + 1]
+                self._status_buf = b""
+                return True, status
+            self._status_buf = self._status_buf[i:]        # 只有 0x06，等下一字节
+            return False, None
+        return False, None
+
     def drain(self):
         """丢弃输入缓冲里的残留字节（开始新一次抓取前调用）。"""
         with self.lock:
@@ -167,6 +193,7 @@ class Comm:
             except Exception:
                 pass
         self.done_seen = False
+        self._status_buf = b""
 
 
 if __name__ == "__main__":

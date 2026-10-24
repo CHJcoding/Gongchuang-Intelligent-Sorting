@@ -94,6 +94,25 @@ BLANK_AFTER_DONE_S = 0.8   # 抓完后再屏蔽这么久（等机械臂收回、
 GRAB_BLANK_DETECT = True   # 抓取期间忽略检测：机械臂进入视野会被误检成物料
 SEND_WAIT_ACK = False      # False = 发完就走，不等帧级 ACK（你现在的方案）
 
+# ---- 抓取结果状态：2 字节回收协议（已实现，但先不启用）----
+# 1 字节协议只表示"抓完了"；2 字节协议还能带回"抓成功没有"：
+#     下行不需要改，上行变成：0x06 + status
+#         status: 0x00=成功  0x01=空抓/失败  0x02=急停  0x03=其它错误
+# 前提：机械臂得有限位开关/夹持检测/真空压力开关之类，否则拿不到成功与否。
+# 启用方法：把 GRAB_STATUS_ENABLE 改成 True，并把 GRAB_DONE_MODE 改成 "byte"。
+GRAB_STATUS_ENABLE = False        # ← 现在注释着不启用
+# GRAB_STATUS_ENABLE = True       # ← 等 STM32 固件真的发 2 字节了，换成这一行
+GRAB_STATUS_OK = 0x00
+GRAB_STATUS_FAIL = 0x01
+GRAB_STATUS_ESTOP = 0x02
+GRAB_STATUS_OTHER = 0x03
+GRAB_STATUS_NAMES = {
+    GRAB_STATUS_OK: "成功",
+    GRAB_STATUS_FAIL: "空抓/失败",
+    GRAB_STATUS_ESTOP: "急停",
+    GRAB_STATUS_OTHER: "其它错误",
+}
+
 # ============ 状态机 ============
 GRAB_DONE_WAIT_S = 3.0
 CAMERA_WARMUP_S = 1.0

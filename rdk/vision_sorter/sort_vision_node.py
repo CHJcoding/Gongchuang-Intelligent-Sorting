@@ -187,9 +187,17 @@ class SortVisionNode(Node):
         mode = str(getattr(C, "GRAB_DONE_MODE", "timer")).lower()
 
         if mode == "byte":
-            if self.comm is not None and self.comm.poll_done():
-                self._end_grab("DONE", elapsed)
-                return
+            if self.comm is not None:
+                if getattr(C, "GRAB_STATUS_ENABLE", False):
+                    # 2 字节协议：0x06 + status（当前未启用）
+                    seen, status = self.comm.poll_done_status()
+                    if seen:
+                        self._end_grab("DONE", elapsed, status)
+                        return
+                elif self.comm.poll_done():
+                    # 1 字节协议：只表示"抓完了"
+                    self._end_grab("DONE", elapsed)
+                    return
             if elapsed >= getattr(C, "GRAB_TIMEOUT_S", 12.0):
                 self.get_logger().warn(
                     "抓取完成字节超时(%.1fs)，强制解锁（下位机是否没发完成信号？）" % elapsed)
@@ -198,11 +206,24 @@ class SortVisionNode(Node):
             if elapsed >= getattr(C, "GRAB_CYCLE_S", 6.0):
                 self._end_grab("TIMER", elapsed)
 
-    def _end_grab(self, reason, elapsed):
-        """结束抓取窗口：解除 busy、开始收臂屏蔽、允许抓下一个物料。"""
+    def _end_grab(self, reason, elapsed, status=None):
+        """
+        结束抓取窗口：解除 busy、开始收臂屏蔽、允许抓下一个物料。
+        status 仅在 2 字节协议（GRAB_STATUS_ENABLE=True）下由下位机回报。
+        """
         self.busy = False
         self.lock_center = None            # 物料已被搬走，解除位置锁定
         self.blank_until = time.time() + getattr(C, "BLANK_AFTER_DONE_S", 0.8)
+        if status is not None:
+            ok = (status == getattr(C, "GRAB_STATUS_OK", 0x00))
+            label = getattr(C, "GRAB_STATUS_NAMES", {}).get(
+                status, "UNKNOWN(0x%02X)" % status)
+            self.get_logger().info(
+                "抓取结束[%s] 用时 %.2fs 下位机回报=%s，%.1fs 后恢复检测"
+                % (reason, elapsed, label,
+                   getattr(C, "BLANK_AFTER_DONE_S", 0.8)))
+            self._publish_state("GRAB_OK" if ok else "GRAB_FAIL")
+            return
         self.get_logger().info(
             "抓取结束[%s] 用时 %.2fs，%.1fs 后恢复检测"
             % (reason, elapsed, getattr(C, "BLANK_AFTER_DONE_S", 0.8)))
