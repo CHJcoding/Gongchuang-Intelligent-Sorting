@@ -146,7 +146,7 @@ GRAB_DONE_MODE     = "byte"
 `GRAB_OK` / `GRAB_FAIL`，方便上层做「失败重试」或「报警」。启用前请确认 STM32 固件
 **真的会发 2 字节**，否则会一直等到 `GRAB_TIMEOUT_S` 才解锁。
 
-### 下行帧格式（comm.py，11 字节）
+### 下行帧格式（comm.py，10 字节）
 
 | 字节 | 内容 | 说明 |
 |---|---|---|
@@ -155,10 +155,14 @@ GRAB_DONE_MODE     = "byte"
 | 3 | color_id | 0=red 1=orange 2=yellow 3=green 4=cyan 5=blue 6=purple 7=magenta 8=black 9=white |
 | 4-5 | x int16 小端 | 机械臂 X(mm) |
 | 6-7 | y int16 小端 | 机械臂 Y(mm) |
-| 8 | z_byte | 抓取高度档 0/1/2 |
-| 9 | crc8 | 对字节 0~8，poly 0x07 |
-| 10 | `0x0D` | 帧尾 |
+| 8 | crc8 | 对字节 0~7，poly 0x07 |
+| 9 | `0x0D` | 帧尾 |
 
+示例（圆锥/绿，x=-12，y=407）：`AA 55 06 03 F4 FF 97 01 FE 0D`
+
+> **z 轴已移除**（2026-10-24）：抓取高度由 STM32 自己决定，帧长 11 → 10 字节，CRC 位置 9 → 8。
+> 改前后务必确认 STM32 固件已按 10 字节解析，否则会错位。
+>
 > ⚠️ `color_id` 由 `COLOR_RANGES_HSV` 的 **dict 插入顺序**生成。调阈值可以，**增删 key 或换顺序会让编号错位**。
 
 ## 六、板端实测数据（2026-10-21）
@@ -185,6 +189,7 @@ GRAB_DONE_MODE     = "byte"
 ## 八、还没闭环的事
 
 - [ ] 手眼标定（机械臂到货后按 `hand_eye.py` 采 9 点，验收平均 ≤5mm、最大 ≤8mm）
+- [ ] **确认 STM32 固件已按 10 字节（无 z）解析**，CRC 在索引 8、帧尾在索引 9
 - [ ] 相机去畸变接入 live 管线（`camera_intrinsic.json` 已有，640×480，但节点未做 `undistort`）
 - [ ] 抓取循环时长标定：实测后把 `GRAB_CYCLE_S` 调准（或改 `GRAB_DONE_MODE="byte"` 由 STM32 回完成字节）
 - [ ] 串口协议与 STM32 固件对齐（视觉侧 AA55+CRC8 vs 控制侧 `chassis_driver.py` 的 0x6C 帧）

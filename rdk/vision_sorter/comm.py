@@ -2,16 +2,17 @@
 """
 与下位机(STM32)的串口通信协议。
 
-下行帧（RDK -> STM32，11 字节）:
+下行帧（RDK -> STM32，10 字节）:
   [0]   0xAA
   [1]   0x55
   [2]   shape_id   形状编号 0-6（255=未知）
   [3]   color_id   颜色编号 0-9（255=未知）
   [4:6] x_int16    机械臂目标 X(mm)，小端
   [6:8] y_int16    机械臂目标 Y(mm)，小端
-  [8]   z_byte     抓取高度档(0=低,1=中,2=高)
-  [9]   crc8       从帧头到 z 的校验，poly 0x07
-  [10]  0x0D       帧尾
+  [8]   crc8       从帧头到 y 的校验，poly 0x07
+  [9]   0x0D       帧尾
+
+注：z 轴已按需求移除（STM32 侧自行决定抓取高度），帧长 11 -> 10 字节。
 
 上行（STM32 -> RDK），按 config.GRAB_DONE_MODE：
   * "timer" 模式：STM32 什么都不用回（纯开环定时解锁）
@@ -48,8 +49,8 @@ def _crc8(data: bytes) -> int:
     return crc
 
 
-def build_frame(shape_name, color_name, x_mm, y_mm, z_byte=0) -> bytes:
-    """组帧（独立出来便于单测/离线校验）。"""
+def build_frame(shape_name, color_name, x_mm, y_mm) -> bytes:
+    """组帧（独立出来便于单测/离线校验）。10 字节，不含 z。"""
     shape_id = SHAPE_ID.get(shape_name, 255)
     color_id = COLOR_ID.get(color_name, 255)
     x_i = int(round(x_mm))
@@ -57,9 +58,8 @@ def build_frame(shape_name, color_name, x_mm, y_mm, z_byte=0) -> bytes:
     # int16 范围保护，越界截断而不是抛异常
     x_i = max(-32768, min(32767, x_i))
     y_i = max(-32768, min(32767, y_i))
-    z_b = max(0, min(255, int(z_byte)))
     body = bytes(C.FRAME_HEAD) + bytes([shape_id, color_id]) + \
-        struct_pack_hh(x_i, y_i) + bytes([z_b])
+        struct_pack_hh(x_i, y_i)
     crc = _crc8(body)
     return body + bytes([crc, C.FRAME_TAIL])
 
@@ -97,17 +97,17 @@ class Comm:
                     self.ser = None
 
     # ---------------- 发送 ----------------
-    def send_grab(self, shape_name, color_name, x_mm, y_mm, z_byte=0,
+    def send_grab(self, shape_name, color_name, x_mm, y_mm,
                   wait_ack=None):
         """
-        发一次抓取指令。
+        发一次抓取指令（10 字节，不含 z）。
           wait_ack=False（默认）：只保证写出串口，立即返回 True
           wait_ack=True         ：等待帧级 ACK 0x06，失败重试 RETRY_TIMES 次
         返回: True 已发出（或收到 ACK）/ False 串口异常或 ACK 超时
         """
         if wait_ack is None:
             wait_ack = bool(getattr(C, "SEND_WAIT_ACK", False))
-        frame = build_frame(shape_name, color_name, x_mm, y_mm, z_byte)
+        frame = build_frame(shape_name, color_name, x_mm, y_mm)
 
         if self.ser is None:
             return False
@@ -198,12 +198,12 @@ class Comm:
 
 if __name__ == "__main__":
     # 离线自检：打印一帧的十六进制，不需要下位机
-    fr = build_frame("YZHU", "green", -12, 407, 0)
+    fr = build_frame("YZHU", "green", -12, 407)
     print("frame(%d bytes):" % len(fr), " ".join("%02X" % b for b in fr))
-    print("crc8 校验位 = 0x%02X" % fr[9])
+    print("crc8 校验位 = 0x%02X" % fr[8])
     # 联机自检（需要串口）
     if len(__import__("sys").argv) > 1:
         c = Comm()
         c.open()
-        print("send:", c.send_grab("YZHU", "green", 200, 300, 0))
+        print("send:", c.send_grab("YZHU", "green", 200, 300))
         c.close()

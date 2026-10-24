@@ -49,9 +49,9 @@ class SerialWorker(threading.Thread):
         self.running = True
         self.stop_event = threading.Event()
 
-    def submit(self, shape, color, x_mm, y_mm, z_byte):
+    def submit(self, shape, color, x_mm, y_mm):
         try:
-            self.q.put_nowait((shape, color, x_mm, y_mm, z_byte))
+            self.q.put_nowait((shape, color, x_mm, y_mm))
             return True
         except queue.Full:
             self.node.get_logger().warn("串口队列满，丢弃本次指令")
@@ -63,9 +63,9 @@ class SerialWorker(threading.Thread):
                 item = self.q.get(timeout=0.2)
             except queue.Empty:
                 continue
-            shape, color, x_mm, y_mm, z_byte = item
+            shape, color, x_mm, y_mm = item
             t0 = time.time()
-            ok = self.comm.send_grab(shape, color, x_mm, y_mm, z_byte)
+            ok = self.comm.send_grab(shape, color, x_mm, y_mm)
             dt = (time.time() - t0) * 1000
             if ok:
                 self.node.get_logger().info(
@@ -394,10 +394,10 @@ class SortVisionNode(Node):
                                   cx, cy, x_mm, y_mm))
 
         if self.serial_worker is not None:
-            self.serial_worker.submit(target["shape"], color, x_mm, y_mm, 0)
+            self.serial_worker.submit(target["shape"], color, x_mm, y_mm)
         else:
             self.get_logger().info(
-                "[SIM] 下发 %s/%s (%d,%d) z=0（模拟抓取 %.1fs）" %
+                "[SIM] 下发 %s/%s (%d,%d)（模拟抓取 %.1fs）" %
                 (target["shape"], color, round(x_mm), round(y_mm),
                  getattr(C, "GRAB_CYCLE_S", 6.0)))
 
