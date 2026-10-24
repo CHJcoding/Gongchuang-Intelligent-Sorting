@@ -1,99 +1,123 @@
 #!/bin/bash
-# cam_watchdog.sh —— 检测节点的自动重启守护
+# cam_watchdog.sh —— 检测节点守护（v2：温和重启，避免自己把相机搞掉线）
 #
-# 背景：C100 相机接在 Genesys USB2 hub 后面，供电余量不足，会每隔几分钟
-# 从 USB 总线上掉一次（内核 -71/-19）。掉了以后 hobot_usb_cam 直接 abort(-6)
-# 退出，而 ros2 launch 默认【不会】重启死掉的节点 —— 于是整条链就永久卡死，
-# 表现就是一堆 "has not received image" + "process has died"。
+# v1 的教训：
+#   用 pkill 硬杀 + 立刻重启，会在推流中途把 UVC 设备复位，内核报
+#   "USB disconnect" / "Failed to resubmit video URB (-19)"，新实例又抢不到，
+#   于是"重启 -> 掉线 -> 打不开 -> 再重启"自我放大。
+#   实测：单进程干净运行 90 秒 0 次掉线；反复 pkill 时几十秒就掉一次。
 #
-# 这个脚本负责：掉了就整条 launch 重启，让流程自己恢复。
+# v2 策略：
+#   1) 启动前先清干净（含孤儿 websocket —— 每条死掉的 launch 都会留一个）
+#   2) 等相机真正可用（探测打开成功）再启动，不硬来
+#   3) 重启先 SIGINT 优雅退出，等进程真的没了再动
+#   4) 判活只看"日志是否还在长" —— 节点正常时每秒都在写 fps 行
+#   5) 频繁失败就退避，绝不疯狂重启
 #
 # 用法：
-#   screen -dmS det /root/vision_ws/cam_watchdog.sh     # 后台守护
-#   screen -r det                                       # 看日志
-#   screen -S det -X quit                               # 停止
+#   screen -dmS det /root/vision_ws/cam_watchdog.sh
+#   screen -r det              # 看日志（Ctrl+A D 退出但不停止）
+#   screen -S det -X quit      # 停止
 # 日志：/root/vision_ws/watchdog.log / /root/vision_ws/det.log
 
 LAUNCH_LOG=/root/vision_ws/det.log
 WD_LOG=/root/vision_ws/watchdog.log
 VIDEO=/dev/video0
-CHECK_INTERVAL=5          # 秒
-MAX_QUICK_RESTART=5       # 60 秒内连续重启超过这个数就退避
-QUICK_WINDOW=60
+CHECK=5              # 每 5 秒检查一次
+STALE=18             # 日志超过 18 秒没更新 = 卡死
+QUICK_WINDOW=120     # 退避窗口
+MAX_QUICK=4          # 窗口内最多重启几次
 
-log() {
-    echo "[$(date '+%H:%M:%S')] $*" | tee -a "$WD_LOG"
+log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$WD_LOG"; }
+
+# ---- 清掉所有相机相关残留（含孤儿 websocket）----
+cleanup_all() {
+    pkill -f 'ros2 launch dnn_node_example' 2>/dev/null
+    sleep 1
+    pkill -f 'dnn_node_example/example' 2>/dev/null
+    pkill -f hobot_usb_cam  2>/dev/null
+    pkill -f hobot_codec    2>/dev/null
+    pkill -f 'lib/websocket/websocket' 2>/dev/null
+    pkill -f 'sbin/nginx'   2>/dev/null
+    sleep 2
+    local left
+    left=$(ps -ef | grep -cE '[r]os2 launch dnn_node|[d]nn_node_example/example|[h]obot_usb_cam|[h]obot_codec|[l]ib/websocket/websocket')
+    [ "$left" -eq 0 ] || log "⚠ 清理后仍有 $left 个残留进程"
 }
 
-# 重启原因判定：只看这几个已知失败特征（不用跑 ros2 节点，开销为 0）
-# $1 = 本周期已运行秒数（启动初期有 warmup，不判"收不到图"）
-need_restart() {
-    local uptime_s="$1"
-    # 相机设备节点没了
-    [ ! -e "$VIDEO" ] && { echo "相机设备 $VIDEO 消失"; return 0; }
-    # 启动失败
-    grep -qa 'Cannot open device' "$LAUNCH_LOG" 2>/dev/null && { echo "hobot_usb_cam 打不开设备（多半是相机被别的进程占着）"; return 0; }
-    # 相机节点死了（exit -6 / -11）
-    grep -qa 'hobot_usb_cam-1\]: process has died' "$LAUNCH_LOG" 2>/dev/null && { echo "hobot_usb_cam 进程死亡"; return 0; }
-    # 下游连续 5 秒收不到图（掉线后典型症状）——启动前 30 秒不算，那是 warmup
-    if [ "$uptime_s" -gt 30 ]; then
-        grep -qa 'has not received image' "$LAUNCH_LOG" 2>/dev/null && { echo "下游收不到图像"; return 0; }
-    fi
+# ---- 等相机可用：能真的打开并取到格式才算 ready ----
+wait_camera_ready() {
+    local i
+    for i in $(seq 1 15); do
+        if [ -e "$VIDEO" ] && timeout 5 v4l2-ctl -d "$VIDEO" --get-fmt-video >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+    done
     return 1
 }
 
-kill_launch() {
-    pkill -f 'ros2 launch dnn_node_example' 2>/dev/null
-    pkill -f 'dnn_node_example/example'     2>/dev/null
-    pkill -f hobot_usb_cam                  2>/dev/null
-    pkill -f hobot_codec                    2>/dev/null
-    pkill -f 'sbin/nginx'                   2>/dev/null
-    sleep 3
-}
-
-log "================ 守护启动 ================"
-log "监控 $VIDEO，每 ${CHECK_INTERVAL}s 检查一次"
-
+log "================ 守护启动 (v2) ================"
 RESTARTS=0
 WINDOW_START=$(date +%s)
 
 while true; do
-    # ---- 启动 ----
-    kill_launch
+    cleanup_all
+    if ! wait_camera_ready; then
+        log "⚠ 相机 $VIDEO 打不开（设备消失或不可用），等 15s 再试"
+        sleep 15
+        continue
+    fi
+
     : > "$LAUNCH_LOG"
-    log "启动检测节点..."
+    log "相机就绪，启动检测节点..."
     setsid /root/vision_ws/run_det.sh >> "$LAUNCH_LOG" 2>&1 &
     LAUNCH_PID=$!
-    sleep 15                       # 给它起来的时间（含 BPU 初始化）
 
-    # ---- 监控 ----
+    # ---- 判活：日志是否还在增长（正常时每秒都有 fps 行）----
+    FAIL=""
     START_TS=$(date +%s)
-    while kill -0 "$LAUNCH_PID" 2>/dev/null; do
-        sleep "$CHECK_INTERVAL"
+    while true; do
+        sleep "$CHECK"
         UP=$(( $(date +%s) - START_TS ))
-        REASON=$(need_restart "$UP")
-        if [ -n "$REASON" ]; then
-            log "发现问题（已运行 ${UP}s）：$REASON —— 重启"
-            break
+
+        if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then
+            FAIL="launch 主进程退出"; break
+        fi
+        [ -e "$VIDEO" ] || { FAIL="相机设备消失"; break; }
+
+        # 前 25 秒是 warmup（BPU 初始化慢），不判卡死
+        if [ "$UP" -gt 25 ]; then
+            AGE=$(( $(date +%s) - $(stat -c %Y "$LAUNCH_LOG" 2>/dev/null || echo 0) ))
+            if [ "$AGE" -gt "$STALE" ]; then
+                FAIL="日志 ${AGE}s 没更新（节点卡死/相机掉了）"; break
+            fi
+            if grep -qaE 'hobot_usb_cam-1\]: process has died|Cannot open device' "$LAUNCH_LOG"; then
+                FAIL="相机节点死亡"; break
+            fi
         fi
     done
 
-    if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then
-        log "launch 主进程已退出 —— 重启"
-    fi
+    log "需要重启：$FAIL（这次跑了 $(( $(date +%s) - START_TS ))s）"
 
-    # ---- 退避：防止相机彻底坏了之后疯狂重启 ----
+    # ---- 优雅停止 ----
+    kill -INT "$LAUNCH_PID" 2>/dev/null
+    for i in 1 2 3 4 5 6; do
+        kill -0 "$LAUNCH_PID" 2>/dev/null || break
+        sleep 1
+    done
+    cleanup_all
+
+    # ---- 退避 ----
     now=$(date +%s)
     if [ $((now - WINDOW_START)) -gt "$QUICK_WINDOW" ]; then
-        WINDOW_START=$now
-        RESTARTS=0
+        WINDOW_START=$now; RESTARTS=0
     fi
-    RESTARTS=$((RESTARTS + 1))
-    if [ "$RESTARTS" -gt "$MAX_QUICK_RESTART" ]; then
-        log "⚠ ${QUICK_WINDOW}s 内已重启 ${RESTARTS} 次，相机可能已彻底失效（检查线和供电），等 60s 再试"
-        kill_launch
+    RESTARTS=$((RESTARTS+1))
+    if [ "$RESTARTS" -ge "$MAX_QUICK" ]; then
+        log "⚠ ${QUICK_WINDOW}s 内已重启 ${RESTARTS} 次，检查相机线和供电；暂停 60s"
         sleep 60
-        WINDOW_START=$(date +%s)
-        RESTARTS=0
+        WINDOW_START=$(date +%s); RESTARTS=0
     fi
+    sleep 3
 done

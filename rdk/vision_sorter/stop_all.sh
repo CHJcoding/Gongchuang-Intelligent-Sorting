@@ -16,18 +16,21 @@ pkill -f 'ros2 launch'     2>/dev/null && echo "  停了 ros2 launch"
 pkill -f dnn_node_example  2>/dev/null
 pkill -f hobot_usb_cam     2>/dev/null
 pkill -f hobot_codec       2>/dev/null
+# 孤儿 websocket：每条死掉的 launch 都会留下一个，攒多了会抢 CPU/带宽，必须清
+NWS=$(ps -ef | grep -c '[l]ib/websocket/websocket')
+[ "$NWS" -gt 0 ] && { pkill -f 'lib/websocket/websocket' 2>/dev/null; echo "  停了 $NWS 个残留 websocket"; }
 pkill -f 'sbin/nginx'      2>/dev/null && echo "  停了 nginx"
 screen -wipe >/dev/null 2>&1
 sleep 3
 
 echo
 echo "=== 检查结果 ==="
-LEFT=$(ps -ef | grep -cE '[r]os2 launch|[d]nn_node_example|[h]obot_usb_cam|[c]am_watchdog|[s]ort_vision_node|[s]bin/nginx')
+LEFT=$(ps -ef | grep -cE '[r]os2 launch|[d]nn_node_example|[h]obot_usb_cam|[c]am_watchdog|[s]ort_vision_node|[s]bin/nginx|[l]ib/websocket/websocket')
 if [ "$LEFT" -eq 0 ]; then
     echo "✅ 全部已停（没有残留进程）"
 else
     echo "⚠ 还有 $LEFT 个残留："
-    ps -ef | grep -E '[r]os2 launch|[d]nn_node_example|[h]obot_usb_cam|[c]am_watchdog|[s]ort_vision_node|[s]bin/nginx' | awk '{print "   ", $2, $8, $9, $10}'
+    ps -ef | grep -E '[r]os2 launch|[d]nn_node_example|[h]obot_usb_cam|[c]am_watchdog|[s]ort_vision_node|[s]bin/nginx|[l]ib/websocket/websocket' | awk '{print "   ", $2, $8, $9, $10}'
 fi
 
 echo
