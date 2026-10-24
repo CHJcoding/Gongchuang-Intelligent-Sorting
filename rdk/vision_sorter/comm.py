@@ -1,23 +1,36 @@
 # -*- coding: utf-8 -*-
 """
-与下位机(STM32/ESP32)的串口通信协议。
-帧格式:
-  [0] 0xAA
-  [1] 0x55
-  [2] shape_id   形状编号 0-8
-  [3] color_id   颜色编号 0-9
-  [4:6] x_int16  机械臂目标X(mm)，小端
-  [6:8] y_int16  机械臂目标Y(mm)，小端
-  [8]   z_byte   抓取高度档(0=低,1=中,2=高)
-  [9]   crc8     从frame_head到z的校验
-  [10] 0x0D      帧尾
-下位机收到后回 0x06 (ACK)。
+与下位机(STM32)的串口通信协议。
+
+下行帧（RDK -> STM32，11 字节）:
+  [0]   0xAA
+  [1]   0x55
+  [2]   shape_id   形状编号 0-6（255=未知）
+  [3]   color_id   颜色编号 0-9（255=未知）
+  [4:6] x_int16    机械臂目标 X(mm)，小端
+  [6:8] y_int16    机械臂目标 Y(mm)，小端
+  [8]   z_byte     抓取高度档(0=低,1=中,2=高)
+  [9]   crc8       从帧头到 z 的校验，poly 0x07
+  [10]  0x0D       帧尾
+
+上行（STM32 -> RDK），按 config.GRAB_DONE_MODE：
+  * "timer" 模式：STM32 什么都不用回（纯开环定时解锁）
+  * "byte"  模式：抓取动作【结束时】回 1 字节 GRAB_DONE_BYTE（0x06）
+                 注意这是"抓完了"的动作级信号，不是"收到帧了"的帧级 ACK。
+
+另外保留可选的帧级 ACK 逻辑（SEND_WAIT_ACK=True 时启用，默认关闭）。
 """
-import serial
-import struct
+import threading
 import time
+
 import config as C
 
+try:
+    import serial
+    HAS_SERIAL = True
+except ImportError:          # PC 上没装 pyserial 时仍可 import 本模块做组帧校验
+    serial = None
+    HAS_SERIAL = False
 
 # 形状/颜色和编号的映射，要和下位机固件里的表一致
 SHAPE_ID = {name: i for i, name in enumerate(C.SHAPE_NAMES)}
@@ -33,51 +46,137 @@ def _crc8(data: bytes) -> int:
     return crc
 
 
+def build_frame(shape_name, color_name, x_mm, y_mm, z_byte=0) -> bytes:
+    """组帧（独立出来便于单测/离线校验）。"""
+    shape_id = SHAPE_ID.get(shape_name, 255)
+    color_id = COLOR_ID.get(color_name, 255)
+    x_i = int(round(x_mm))
+    y_i = int(round(y_mm))
+    # int16 范围保护，越界截断而不是抛异常
+    x_i = max(-32768, min(32767, x_i))
+    y_i = max(-32768, min(32767, y_i))
+    z_b = max(0, min(255, int(z_byte)))
+    body = bytes(C.FRAME_HEAD) + bytes([shape_id, color_id]) + \
+        struct_pack_hh(x_i, y_i) + bytes([z_b])
+    crc = _crc8(body)
+    return body + bytes([crc, C.FRAME_TAIL])
+
+
+def struct_pack_hh(a, b) -> bytes:
+    """struct.pack('<hh', a, b) 的轻量替代。"""
+    import struct
+    return struct.pack("<hh", a, b)
+
+
 class Comm:
     def __init__(self):
         self.ser = None
+        self.lock = threading.Lock()      # 写线程(发送) 与 ROS定时器(读完成字节) 共用串口
+        self.done_seen = False
 
+    # ---------------- 打开/关闭 ----------------
     def open(self):
-        self.ser = serial.Serial(
-            C.SERIAL_PORT, C.SERIAL_BAUD, timeout=C.TIMEOUT_S
-        )
-        time.sleep(0.2)
-        self.ser.reset_input_buffer()
-        self.ser.reset_output_buffer()
-
-    def send_grab(self, shape_name, color_name, x_mm, y_mm, z_byte=0):
-        """
-        发一次抓取指令，带ACK等待和重试。
-        返回: True 下位机确认收到
-        """
-        shape_id = SHAPE_ID.get(shape_name, 255)
-        color_id = COLOR_ID.get(color_name, 255)
-        x_i = int(round(x_mm))
-        y_i = int(round(y_mm))
-        body = bytes(C.FRAME_HEAD) + bytes([shape_id, color_id]) + \
-               struct.pack("<hh", x_i, y_i) + bytes([z_byte])
-        crc = _crc8(body)
-        frame = body + bytes([crc, C.FRAME_TAIL])
-
-        for attempt in range(C.RETRY_TIMES):
-            self.ser.write(frame)
-            self.ser.flush()
-            # 等ACK
-            ack = self.ser.read(1)
-            if ack and ack[0] == C.ACK_BYTE:
-                return True
-            time.sleep(0.1)
-        return False
+        if not HAS_SERIAL:
+            raise RuntimeError("未安装 pyserial：pip3 install pyserial")
+        with self.lock:
+            self.ser = serial.Serial(
+                C.SERIAL_PORT, C.SERIAL_BAUD, timeout=0)   # 非阻塞读
+            time.sleep(0.2)
+            self.ser.reset_input_buffer()
+            self.ser.reset_output_buffer()
 
     def close(self):
-        if self.ser:
-            self.ser.close()
+        with self.lock:
+            if self.ser:
+                try:
+                    self.ser.close()
+                finally:
+                    self.ser = None
+
+    # ---------------- 发送 ----------------
+    def send_grab(self, shape_name, color_name, x_mm, y_mm, z_byte=0,
+                  wait_ack=None):
+        """
+        发一次抓取指令。
+          wait_ack=False（默认）：只保证写出串口，立即返回 True
+          wait_ack=True         ：等待帧级 ACK 0x06，失败重试 RETRY_TIMES 次
+        返回: True 已发出（或收到 ACK）/ False 串口异常或 ACK 超时
+        """
+        if wait_ack is None:
+            wait_ack = bool(getattr(C, "SEND_WAIT_ACK", False))
+        frame = build_frame(shape_name, color_name, x_mm, y_mm, z_byte)
+
+        if self.ser is None:
+            return False
+        try:
+            if not wait_ack:
+                with self.lock:
+                    self.ser.write(frame)
+                    self.ser.flush()
+                return True
+            # 旧的帧级 ACK 模式
+            for _ in range(C.RETRY_TIMES):
+                with self.lock:
+                    self.ser.reset_input_buffer()
+                    self.ser.write(frame)
+                    self.ser.flush()
+                t_end = time.time() + C.TIMEOUT_S
+                while time.time() < t_end:
+                    b = self._read_nonblock(1)
+                    if b and b[0] == C.ACK_BYTE:
+                        return True
+                    time.sleep(0.01)
+            return False
+        except Exception:
+            return False
+
+    # ---------------- 接收 ----------------
+    def _read_nonblock(self, n=1):
+        with self.lock:
+            if self.ser is None:
+                return b""
+            try:
+                waiting = self.ser.in_waiting
+                if waiting <= 0:
+                    return b""
+                return self.ser.read(min(n, waiting))
+            except Exception:
+                return b""
+
+    def poll_done(self) -> bool:
+        """
+        非阻塞检查是否收到"抓取完成"字节。
+        收到即返回 True；同时清掉其它杂字节（避免累积）。
+        仅 GRAB_DONE_MODE == "byte" 时被调用。
+        """
+        data = self._read_nonblock(16)
+        if not data:
+            return False
+        if C.GRAB_DONE_BYTE in data:
+            self.done_seen = True
+            return True
+        return False
+
+    def drain(self):
+        """丢弃输入缓冲里的残留字节（开始新一次抓取前调用）。"""
+        with self.lock:
+            if self.ser is None:
+                return
+            try:
+                self.ser.reset_input_buffer()
+            except Exception:
+                pass
+        self.done_seen = False
 
 
 if __name__ == "__main__":
-    # 自检：发个假指令
-    c = Comm()
-    c.open()
-    ok = c.send_grab("circle", "red", 200, 300, 0)
-    print(f"send result: {ok}")
-    c.close()
+    # 离线自检：打印一帧的十六进制，不需要下位机
+    fr = build_frame("YZHU", "green", -12, 407, 0)
+    print("frame(%d bytes):" % len(fr), " ".join("%02X" % b for b in fr))
+    print("crc8 校验位 = 0x%02X" % fr[9])
+    # 联机自检（需要串口）
+    if len(__import__("sys").argv) > 1:
+        c = Comm()
+        c.open()
+        print("send:", c.send_grab("YZHU", "green", 200, 300, 0))
+        c.close()

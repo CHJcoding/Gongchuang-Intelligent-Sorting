@@ -77,9 +77,22 @@ SERIAL_PORT = "/dev/ttyUSB0"
 SERIAL_BAUD = 115200
 FRAME_HEAD = [0xAA, 0x55]
 FRAME_TAIL = 0x0D
-ACK_BYTE = 0x06
-RETRY_TIMES = 3
-TIMEOUT_S = 0.5
+ACK_BYTE = 0x06            # 帧级 ACK（"收到帧了"）—— 本方案默认不要求，见 SEND_WAIT_ACK
+RETRY_TIMES = 3            # 仅 SEND_WAIT_ACK=True 时生效
+TIMEOUT_S = 0.5            # 仅 SEND_WAIT_ACK=True 时生效
+
+# ============ 抓取完成判定（一发一抓的流控）============
+# 单向发送时 RDK 不知道 STM32 抓完没有，必须选一种"解锁"依据：
+#   "byte"  : STM32 抓取动作结束时回 1 字节 GRAB_DONE_BYTE
+#             —— 这是【动作级完成信号】，不是帧级 ACK；不需要重试、不需要握手。
+#   "timer" : 纯开环，按 GRAB_CYCLE_S 定时解锁，STM32 一行代码都不用加。
+GRAB_DONE_MODE = "timer"
+GRAB_CYCLE_S = 6.0         # timer 模式：一次完整抓取循环时长（现场实测后调准）
+GRAB_DONE_BYTE = 0x06      # byte 模式：完成字节（与 ACK_BYTE 同值也可，语义不同）
+GRAB_TIMEOUT_S = 12.0      # 兜底：超时强制解锁，防止永久卡死
+BLANK_AFTER_DONE_S = 0.8   # 抓完后再屏蔽这么久（等机械臂收回、离开视野）
+GRAB_BLANK_DETECT = True   # 抓取期间忽略检测：机械臂进入视野会被误检成物料
+SEND_WAIT_ACK = False      # False = 发完就走，不等帧级 ACK（你现在的方案）
 
 # ============ 状态机 ============
 GRAB_DONE_WAIT_S = 3.0

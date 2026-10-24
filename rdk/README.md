@@ -36,4 +36,8 @@ rdk/
 视觉侧 `comm.py` 用 **`AA 55 … CRC8 0D`** 把「形状+颜色+坐标」发给 STM32；
 控制侧 `chassis_driver.py` 用 **`0x6C … 0x2F`** 发运动/舵机/伸缩。
 
-两套帧格式**尚未统一**，等 STM32 固件确认后收敛。见 `vision_sorter/BOARD_README.md` §七。
+一张帧 = 一次抓取。RDK 判断「抓完了」有两种模式（`config.py: GRAB_DONE_MODE`）：
+- `"timer"`：定时解锁，STM32 零改动
+- `"byte"`：STM32 动作结束时回 1 字节 `0x06`（动作级 DONE，不是帧级 ACK）
+
+详见 `vision_sorter/BOARD_README.md` §五。

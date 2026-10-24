@@ -1,6 +1,7 @@
 # RDK X5 板端部署说明（D1 架构：订阅官方检测节点）
 
-> 现状基准：2026-10-21 板端实测（10.132.154.122）+ 2026-10-24 目录整理。
+> 现状基准：2026-10-21 板端实测 + 2026-10-24 目录整理 / 抓取流控改造。
+> 板子 IP：**10.161.15.50**（固定，历史曾用 10.132.154.122）
 > 本地源码位置：`GC/rdk/vision_sorter/`
 > 板端部署位置：`/root/vision_ws/vision_sorter/`
 
@@ -84,7 +85,58 @@ python3 sort_vision_node.py            # 默认 auto_trigger=true
 
 调**颜色**改后者；调**检测置信度**改前者。
 
-## 五、板端实测数据（2026-10-21）
+## 五、抓取流控：一发一抓，RDK 怎么知道「抓完了」
+
+**问题**：串口是单向的（RDK→STM32），帧发出去 RDK 并不知道机械臂抓完没有。更麻烦的是——**抓取时机械臂会进入相机视野，YOLO 会把夹具/手臂误检成物料**，所以抓取期间必须屏蔽检测，否则会立刻发出一帧错误坐标。
+
+所以「抓取窗口」是硬需求，不只是为了节拍。窗口何时结束，两种模式二选一（`config.py: GRAB_DONE_MODE`）：
+
+| 模式 | STM32 要做什么 | RDK 怎么解锁 | 特点 |
+|---|---|---|---|
+| `"timer"`（默认） | **什么都不用做** | 发帧后等 `GRAB_CYCLE_S`（默认 6s）定时解锁 | 最省事，时间是估的 |
+| `"byte"`（推荐） | 抓取动作**结束时**发 1 字节 `0x06` | 收到完成字节立即解锁，`GRAB_TIMEOUT_S` 兜底 | 自适应、节拍最快 |
+
+**`0x06` 的两种语义别混**：
+- **帧级 ACK** = 收到帧就回 → "我收到这条指令了"（需要重试握手）→ 你说不要的是这个
+- **动作级 DONE** = 抓取做完才回 → "我抓完了"（不需要重试）→ 只需一行 `Serial_SendByte(0x06)`
+
+```
+发出帧 → busy=True，进入屏蔽期（忽略所有检测）
+   ├─ byte 模式：收到 0x06 → 解锁（最快）
+   ├─ timer 模式：到 GRAB_CYCLE_S → 解锁
+   └─ 超时 GRAB_TIMEOUT_S → 强制解锁 + 告警（防永卡）
+解锁后再屏蔽 BLANK_AFTER_DONE_S(0.8s)，等机械臂收回、离开视野
+```
+
+相关参数（全在 `config.py`）：
+```python
+GRAB_DONE_MODE   = "timer"  # "timer" | "byte"
+GRAB_CYCLE_S     = 6.0      # timer：一次完整抓取循环时长（实测后调准）
+GRAB_DONE_BYTE   = 0x06     # byte：完成字节
+GRAB_TIMEOUT_S   = 12.0     # 兜底强制解锁
+BLANK_AFTER_DONE_S = 0.8    # 抓完后的收臂屏蔽
+GRAB_BLANK_DETECT  = True   # 抓取期间屏蔽检测
+SEND_WAIT_ACK      = False  # 不等帧级 ACK
+```
+
+**怎么标定 `GRAB_CYCLE_S`**：手动触发一次抓取，掐表从「帧发出」到「机械臂回到待命位」，取实测值 + 20% 余量。
+
+### 下行帧格式（comm.py，11 字节）
+
+| 字节 | 内容 | 说明 |
+|---|---|---|
+| 0-1 | `AA 55` | 帧头 |
+| 2 | shape_id | 0=BQ 1=LK 2=SLZ 3=SMT 4=WLZ 5=YZ 6=YZHU，未知=255 |
+| 3 | color_id | 0=red 1=orange 2=yellow 3=green 4=cyan 5=blue 6=purple 7=magenta 8=black 9=white |
+| 4-5 | x int16 小端 | 机械臂 X(mm) |
+| 6-7 | y int16 小端 | 机械臂 Y(mm) |
+| 8 | z_byte | 抓取高度档 0/1/2 |
+| 9 | crc8 | 对字节 0~8，poly 0x07 |
+| 10 | `0x0D` | 帧尾 |
+
+> ⚠️ `color_id` 由 `COLOR_RANGES_HSV` 的 **dict 插入顺序**生成。调阈值可以，**增删 key 或换顺序会让编号错位**。
+
+## 六、板端实测数据（2026-10-21）
 
 | 指标 | 值 |
 |---|---|
@@ -96,7 +148,7 @@ python3 sort_vision_node.py            # 默认 auto_trigger=true
 | 检测框坐标空间 | **原图 640×480**，与本地 torch 误差 1~3px，无需缩放 |
 | 稳定性 | 阈值 0.80 时每帧 1 个框，连续 60 帧零空帧 |
 
-## 六、已知坑（都已踩过，别再踩）
+## 七、已知坑（都已踩过，别再踩）
 
 1. **`ai_msgs/Target` 字段是 `rois`，不是 `tracks`** —— 用 `tracks` 会在回调里抛 `AttributeError`。
 2. **`score_threshold` 别低于 0.50**：0.25 时一帧能吐 45 个重叠误检，下游完全没法用。
@@ -105,9 +157,10 @@ python3 sort_vision_node.py            # 默认 auto_trigger=true
 5. **串口 color_id 依赖 `COLOR_RANGES_HSV` 的 dict 插入顺序**：调整阈值可以，**增删 key 或换顺序会让编号错位**。
 6. **`HAND_EYE_M` 目前是占位值**，坐标换算结果是假的，标定前别当真。
 
-## 七、还没闭环的事
+## 八、还没闭环的事
 
 - [ ] 手眼标定（机械臂到货后按 `hand_eye.py` 采 9 点，验收平均 ≤5mm、最大 ≤8mm）
 - [ ] 相机去畸变接入 live 管线（`camera_intrinsic.json` 已有，640×480，但节点未做 `undistort`）
+- [ ] 抓取循环时长标定：实测后把 `GRAB_CYCLE_S` 调准（或改 `GRAB_DONE_MODE="byte"` 由 STM32 回完成字节）
 - [ ] 串口协议与 STM32 固件对齐（视觉侧 AA55+CRC8 vs 控制侧 `chassis_driver.py` 的 0x6C 帧）
 - [ ] 决定是否重建 640×480 的 bin 以消除拉伸失真

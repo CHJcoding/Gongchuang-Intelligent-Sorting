@@ -69,13 +69,13 @@ class SerialWorker(threading.Thread):
             dt = (time.time() - t0) * 1000
             if ok:
                 self.node.get_logger().info(
-                    "串口 ACK 成功 %.0fms | %s/%s (%d,%d)" %
-                    (dt, shape, color, round(x_mm), round(y_mm)))
+                    "串口已发出 %.1fms | %s/%s (%d,%d) | 等待抓取完成(%s模式)" %
+                    (dt, shape, color, round(x_mm), round(y_mm),
+                     getattr(C, "GRAB_DONE_MODE", "timer")))
             else:
                 self.node.get_logger().error(
-                    "串口无 ACK（%.0fms，重试 %d 次）| %s/%s" %
-                    (dt, C.RETRY_TIMES, shape, color))
-            self.node.on_serial_done(ok)
+                    "串口发送失败 %.1fms | %s/%s" % (dt, shape, color))
+                self.node.on_send_failed()
 
     def stop(self):
         self.running = False
@@ -99,13 +99,16 @@ class SortVisionNode(Node):
 
         # ---- 状态 ----
         self.armed = self.auto_trigger     # 是否允许触发一次分拣
-        self.busy = False                  # 单飞保护
+        self.busy = False                  # 是否处于一次抓取窗口（期间屏蔽检测）
+        self.grab_start = 0.0              # 本次抓取开始时刻
+        self.blank_until = 0.0             # 检测屏蔽截止时刻（抓取中 + 收臂期）
         self.last_fire_t = 0.0
         self.lock_center = None            # 已下发目标的位置，防重复抓同一物料
         self.lock_time = 0.0
         self.stat_det = 0                  # 收到检测消息数
         self.stat_hit = 0                  # 含有效目标的消息数
         self.stat_fire = 0                 # 实际下发次数
+        self.stat_blank = 0                # 因抓取窗口被屏蔽的检测消息数
         self.stat_color_fail = 0
 
         # ---- 发布 ----
@@ -132,10 +135,16 @@ class SortVisionNode(Node):
 
         # ---- 定时器：状态心跳 + 统计 ----
         self.create_timer(5.0, self.on_timer)
+        # 抓取窗口看门狗：判定"抓完了"并解除屏蔽（10Hz）
+        self.create_timer(0.1, self.on_grab_watchdog)
         self.get_logger().info(
-            "sort_vision_node 启动 | det=%s img=%s result=%s | auto=%s sim=%s"
+            "sort_vision_node 启动 | det=%s img=%s result=%s | auto=%s sim=%s | "
+            "完成判定=%s(cycle=%.1fs timeout=%.1fs)"
             % (C.DET_TOPIC, C.IMG_TOPIC, C.RESULT_TOPIC,
-               self.auto_trigger, self.serial_sim))
+               self.auto_trigger, self.serial_sim,
+               getattr(C, "GRAB_DONE_MODE", "timer"),
+               getattr(C, "GRAB_CYCLE_S", 6.0),
+               getattr(C, "GRAB_TIMEOUT_S", 12.0)))
 
     # ---------------- 串口 ----------------
     def _init_serial(self):
@@ -157,8 +166,47 @@ class SortVisionNode(Node):
                 "串口打开失败（%s: %s），自动进入模拟模式" %
                 (type(e).__name__, e))
 
-    def on_serial_done(self, ok):
+    # ---------------- 抓取窗口：如何判定"抓完了" ----------------
+    def on_send_failed(self):
+        """串口发送失败：立即解除抓取窗口。"""
         self.busy = False
+        self.blank_until = 0.0
+        self._publish_state("SEND_FAIL")
+
+    def on_grab_watchdog(self):
+        """
+        10Hz 检查抓取窗口是否该结束。
+
+          timer 模式：发出去后按 GRAB_CYCLE_S 定时解锁（STM32 无需任何回报）
+          byte  模式：等 STM32 在动作结束时回的 GRAB_DONE_BYTE，超时则兜底解锁
+        """
+        if not self.busy:
+            return
+        now = time.time()
+        elapsed = now - self.grab_start
+        mode = str(getattr(C, "GRAB_DONE_MODE", "timer")).lower()
+
+        if mode == "byte":
+            if self.comm is not None and self.comm.poll_done():
+                self._end_grab("DONE", elapsed)
+                return
+            if elapsed >= getattr(C, "GRAB_TIMEOUT_S", 12.0):
+                self.get_logger().warn(
+                    "抓取完成字节超时(%.1fs)，强制解锁（下位机是否没发完成信号？）" % elapsed)
+                self._end_grab("TIMEOUT", elapsed)
+        else:
+            if elapsed >= getattr(C, "GRAB_CYCLE_S", 6.0):
+                self._end_grab("TIMER", elapsed)
+
+    def _end_grab(self, reason, elapsed):
+        """结束抓取窗口：解除 busy、开始收臂屏蔽、允许抓下一个物料。"""
+        self.busy = False
+        self.lock_center = None            # 物料已被搬走，解除位置锁定
+        self.blank_until = time.time() + getattr(C, "BLANK_AFTER_DONE_S", 0.8)
+        self.get_logger().info(
+            "抓取结束[%s] 用时 %.2fs，%.1fs 后恢复检测"
+            % (reason, elapsed, getattr(C, "BLANK_AFTER_DONE_S", 0.8)))
+        self._publish_state("GRAB_" + reason)
 
     # ---------------- 订阅回调 ----------------
     def on_image(self, msg):
@@ -188,6 +236,10 @@ class SortVisionNode(Node):
 
     def on_detection(self, msg):
         self.stat_det += 1
+        # 抓取窗口：机械臂/夹具会进入视野并被 YOLO 误检成物料，必须屏蔽
+        if self.blank_until and time.time() < self.blank_until:
+            self.stat_blank += 1
+            return
         targets = []
         for t in msg.targets:
             rois = getattr(t, "rois", None)
@@ -236,6 +288,7 @@ class SortVisionNode(Node):
         if msg.data:
             self.armed = True
             self.busy = False
+            self.blank_until = 0.0
             self.lock_center = None          # 显式启动 = 重新允许抓取当前目标
             self.get_logger().info("收到启动信号，进入待触发状态")
             self._publish_state("ARMED")
@@ -244,10 +297,25 @@ class SortVisionNode(Node):
         if msg.data:
             self.armed = False
             self.busy = False
+            self.blank_until = 0.0
             self.get_logger().info("收到复位信号")
             self._publish_state("RESET")
 
     # ---------------- 一次分拣流程 ----------------
+    def _begin_grab(self, now):
+        """进入抓取窗口（屏蔽检测），按模式设定窗口上限。"""
+        self.busy = True
+        self.grab_start = now
+        mode = str(getattr(C, "GRAB_DONE_MODE", "timer")).lower()
+        if mode == "byte":
+            window = getattr(C, "GRAB_TIMEOUT_S", 12.0)
+            if self.comm is not None:
+                self.comm.drain()   # 清掉残留字节，避免把上一次的完成信号误当本次
+        else:
+            window = getattr(C, "GRAB_CYCLE_S", 6.0)
+        self.blank_until = now + window + getattr(C, "BLANK_AFTER_DONE_S", 0.8)
+        self._publish_state("GRABBING")
+
     def _fire(self, target, det_msg):
         frame = self._pick_frame(det_msg.header.stamp)
         if frame is None:
@@ -277,11 +345,12 @@ class SortVisionNode(Node):
         cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
         x_mm, y_mm, z_mm = pixel_to_robot(cx, cy)
 
-        self.last_fire_t = time.time()
-        self.busy = True
+        now = time.time()
+        self.last_fire_t = now
         self.stat_fire += 1
         self.lock_center = (cx, cy)        # 锁定该物料，防重复下发
-        self.lock_time = self.last_fire_t
+        self.lock_time = now
+        self._begin_grab(now)              # 进入抓取窗口，期间屏蔽检测
         if not self.auto_trigger:
             self.armed = False          # 单次触发模式：发一次就不再自动触发
 
@@ -306,11 +375,10 @@ class SortVisionNode(Node):
         if self.serial_worker is not None:
             self.serial_worker.submit(target["shape"], color, x_mm, y_mm, 0)
         else:
-            self.get_logger().info("[SIM] 下发 %s/%s (%d,%d) z=0" %
-                                   (target["shape"], color, round(x_mm),
-                                    round(y_mm)))
-            self.busy = False
-            self._publish_state("SIM_SENT")
+            self.get_logger().info(
+                "[SIM] 下发 %s/%s (%d,%d) z=0（模拟抓取 %.1fs）" %
+                (target["shape"], color, round(x_mm), round(y_mm),
+                 getattr(C, "GRAB_CYCLE_S", 6.0)))
 
         self._publish_state("SENT" if self.serial_worker else "SIM_SENT")
 
@@ -319,9 +387,9 @@ class SortVisionNode(Node):
 
     def on_timer(self):
         self.get_logger().info(
-            "统计: 检测消息=%d 含目标=%d 下发=%d 颜色失败=%d 帧缓存=%d"
-            % (self.stat_det, self.stat_hit, self.stat_fire,
-               self.stat_color_fail, len(self.frames)))
+            "统计: 检测消息=%d 含目标=%d 下发=%d 屏蔽=%d 颜色失败=%d 帧缓存=%d busy=%s"
+            % (self.stat_det, self.stat_hit, self.stat_fire, self.stat_blank,
+               self.stat_color_fail, len(self.frames), self.busy))
 
     def destroy_node(self):
         if self.serial_worker:
