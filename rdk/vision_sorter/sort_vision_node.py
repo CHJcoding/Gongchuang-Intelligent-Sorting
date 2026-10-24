@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C
 from color_classifier import classify_color
 import hand_eye
+import camera_model
 from hand_eye import pixel_to_robot
 
 
@@ -154,6 +155,13 @@ class SortVisionNode(Node):
 
         # 手眼标定状态：没标定就大声报，别让人拿假坐标去驱动龙门
         hand_eye.warn_if_uncalibrated(self.get_logger())
+        # 去畸变：广角镜头边缘偏十几毫米，必须和标定时状态一致
+        camera_model.warn_if_disabled(self.get_logger())
+        try:
+            camera_model.check_hand_eye_consistency(
+                getattr(hand_eye, "META", {}) or {}, self.get_logger())
+        except Exception as e:                        # noqa: BLE001
+            self.get_logger().warn("去畸变/标定一致性检查失败: %s" % (e,))
         if getattr(C, "POS_ENABLE", False):
             self.get_logger().info(
                 "夹爪坐标回传已开启 | 帧头=0x%02X 长度=%d 话题=%s"
@@ -398,7 +406,11 @@ class SortVisionNode(Node):
             return
 
         cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-        x_mm, y_mm, z_mm = pixel_to_robot(cx, cy)
+        # 广角畸变修正：必须做在"像素->毫米"之前。手眼矩阵是仿射的，
+        # 吸收不了非线性畸变（C100 四角实测偏 130~200px ≈ 十几毫米）。
+        # planar_calib 标定时也是先去畸变再检角点，两边口径一致。
+        cx_u, cy_u = camera_model.undistort_point(cx, cy)
+        x_mm, y_mm, z_mm = pixel_to_robot(cx_u, cy_u)
         if not hand_eye.is_calibrated():
             self.get_logger().warn(
                 "手眼未标定：坐标由占位矩阵算出，是假值！仅用于打通链路，"
@@ -424,13 +436,23 @@ class SortVisionNode(Node):
             "color_conf": color_conf,
             "bbox": target["bbox"],
             "pixel": [round(cx, 1), round(cy, 1)],
+            "pixel_undist": [round(cx_u, 1), round(cy_u, 1)],
+            "undistort": camera_model.is_active(),
             "robot_mm": [x_mm, y_mm, z_mm],
         }
         self.pub_result.publish(String(data=json.dumps(payload,
                                                       ensure_ascii=False)))
-        self.get_logger().info("目标 %s/%s conf=%.2f px=(%.0f,%.0f) -> (%.1f, %.1f)mm"
-                               % (payload["shape_cn"], color, payload["conf"],
-                                  cx, cy, x_mm, y_mm))
+        if camera_model.is_active():
+            self.get_logger().info(
+                "目标 %s/%s conf=%.2f px=(%.0f,%.0f)->去畸变(%.0f,%.0f) -> "
+                "(%.1f, %.1f)mm"
+                % (payload["shape_cn"], color, payload["conf"],
+                   cx, cy, cx_u, cy_u, x_mm, y_mm))
+        else:
+            self.get_logger().info(
+                "目标 %s/%s conf=%.2f px=(%.0f,%.0f) -> (%.1f, %.1f)mm"
+                % (payload["shape_cn"], color, payload["conf"],
+                   cx, cy, x_mm, y_mm))
 
         if self.serial_worker is not None:
             self.serial_worker.submit(target["shape"], color, x_mm, y_mm)

@@ -35,6 +35,7 @@ for _p in (os.path.join(_PARENT, "rdk", "vision_sorter"),
 import config as C            # noqa: E402
 import comm                  # noqa: E402
 import hand_eye              # noqa: E402
+import camera_model          # noqa: E402
 import planar_calib          # noqa: E402
 
 PASS, FAIL = [], []
@@ -318,11 +319,118 @@ def test_aligned_residual():
 
     u, v = float(px[0][0]), float(px[0][1])
     anc, _px3, _o3, _ = planar_calib.calibrate_from_image(
-        path, anchor=(u, v, 500.0, 300.0))
+        path, anchors=[(u, v, 500.0, 300.0)])
     g = np.array(anc["matrix"]) @ np.array([u, v, 1.0])
     check("锚点把角点 0 钉到 (500,300)",
           abs(g[0] - 500.0) < 1e-6 and abs(g[1] - 300.0) < 1e-6, g)
     check("锚点后残差仍达标", anc["mean_residual"] < 1.0, anc["mean_residual"])
+
+    # ---- 方案B：STM32 回传坐标 -> 3 个锚点自动解旋转/手性 ----
+    th = np.deg2rad(-7.5)
+    A_true = np.array([[np.cos(th), -np.sin(th), 260.0],
+                       [np.sin(th), np.cos(th), 140.0]])
+    M_true = planar_calib.compose(A_true, np.array(plain["matrix"]))
+    idxs = [0, 8, 53]
+    anchors = []
+    for i in idxs:
+        uu, vv = float(px[i][0]), float(px[i][1])
+        p = M_true @ np.array([uu, vv, 1.0])
+        anchors.append((uu, vv, float(p[0]), float(p[1])))
+    multi, _px4, _o4, _ = planar_calib.calibrate_from_image(path, anchors=anchors)
+    check("3 锚点还原真实变换（含旋转）",
+          np.abs(np.array(multi["matrix"]) - M_true).max() < 0.05,
+          np.abs(np.array(multi["matrix"]) - M_true).max())
+    check("3 锚点解出比例 ≈1", abs(multi.get("anchor_scale", 0) - 1.0) < 1e-3,
+          multi.get("anchor_scale"))
+    check("3 锚点判定不镜像", multi.get("anchor_mirror") is False,
+          multi.get("anchor_mirror"))
+
+    # 两锚点也能量出旋转，但必须如实说明"手性判不了"
+    two, _px5, _o5, _ = planar_calib.calibrate_from_image(path, anchors=anchors[:2])
+    check("2 锚点仍能对齐（手性按不镜像处理）",
+          np.abs(np.array(two["matrix"]) - M_true).max() < 0.05,
+          np.abs(np.array(two["matrix"]) - M_true).max())
+
+
+def test_camera_model():
+    """去畸变：直通/正常/坏内参/一致性告警。"""
+    # ---- 用零畸变内参：点必须原地不动（防止把"启用"写成"乱改坐标"）----
+    tmp = tempfile.mkdtemp(prefix="cam_")
+    p0 = os.path.join(tmp, "zero.json")
+    with open(p0, "w", encoding="utf-8") as f:
+        json.dump({"mtx": [[400.0, 0, 320.0], [0, 400.0, 240.0], [0, 0, 1]],
+                   "dist": [0, 0, 0, 0, 0]}, f)
+    old = camera_model.candidate_paths
+    try:
+        camera_model.candidate_paths = lambda: [p0]
+        camera_model.reload()
+        check("零畸变内参：点原地不动",
+              np.allclose(camera_model.undistort_points([[100, 200], [500, 400]]),
+                          [[100, 200], [500, 400]], atol=1e-6),
+              camera_model.undistort_points([[100, 200]]))
+
+        # ---- k1>0（枕形，OpenCV 约定 x_d = x(1+k1·r²)）：
+        #      观测到的边缘像素对应的理想位置更靠近中心，修正后径向应当【变小】。
+        #      项目里 C100 那组内参就是这个方向（四角从 428px 收到 225px）。
+        p1 = os.path.join(tmp, "k1pos.json")
+        with open(p1, "w", encoding="utf-8") as f:
+            json.dump({"mtx": [[400.0, 0, 320.0], [0, 400.0, 240.0], [0, 0, 1]],
+                       "dist": [0.3, 0.0, 0.0, 0.0, 0.0]}, f)
+        camera_model.candidate_paths = lambda: [p1]
+        camera_model.reload()
+        u0, v0 = camera_model.undistort_point(620, 460)     # 右下角
+        r_in = np.hypot(620 - 320, 460 - 240)
+        r_out = np.hypot(u0 - 320, v0 - 240)
+        check("k1>0：修正后径向变小（往中心收）", r_out < r_in - 1.0,
+              (r_in, r_out))
+
+        # ---- k1<0（桶形）：方向必须相反 ----
+        p1b = os.path.join(tmp, "k1neg.json")
+        with open(p1b, "w", encoding="utf-8") as f:
+            json.dump({"mtx": [[400.0, 0, 320.0], [0, 400.0, 240.0], [0, 0, 1]],
+                       "dist": [-0.3, 0.0, 0.0, 0.0, 0.0]}, f)
+        camera_model.candidate_paths = lambda: [p1b]
+        camera_model.reload()
+        # 注意用 (100,200) 而不是四角：k1<0 在很远的地方会让模型"折叠"，
+        # OpenCV 迭代不收敛会原样返回（这是它自身行为，不是我们的 bug）。
+        u1, v1 = camera_model.undistort_point(100, 200)
+        r_neg_in = np.hypot(100 - 320, 200 - 240)
+        check("k1<0：修正后径向变大（往外扩）",
+              np.hypot(u1 - 320, v1 - 240) > r_neg_in + 1.0,
+              (r_neg_in, np.hypot(u1 - 320, v1 - 240)))
+
+        check("中心附近几乎不动",
+              np.hypot(*np.subtract(camera_model.undistort_point(322, 242),
+                                    (322, 242))) < 0.5,
+              camera_model.undistort_point(322, 242))
+
+        # ---- 坏内参：不能崩，退化直通 ----
+        p2 = os.path.join(tmp, "bad.json")
+        with open(p2, "w", encoding="utf-8") as f:
+            json.dump({"mtx": [[0, 0, 0], [0, 0, 0], [0, 0, 1]], "dist": [0, 0, 0, 0]}, f)
+        camera_model.candidate_paths = lambda: [p2]
+        camera_model.reload()
+        check("坏内参(fx=0)：不启用而不是崩", camera_model.is_active() is False)
+        check("未启用时像素直通",
+              np.allclose(camera_model.undistort_points([[1, 2]]), [[1, 2]]))
+
+        # ---- 文件缺失 ----
+        camera_model.candidate_paths = lambda: [os.path.join(tmp, "nope.json")]
+        camera_model.reload()
+        check("内参缺失：不启用", camera_model.is_active() is False)
+        check("未启用时 max_correction=0", camera_model.max_correction_px() == 0.0)
+    finally:
+        camera_model.candidate_paths = old
+        camera_model.reload()
+
+    # ---- 一致性检查：标定/推理两边必须同口径 ----
+    want = camera_model.is_active()
+    check("一致性：两边同口径 -> 通过",
+          camera_model.check_hand_eye_consistency({"undistorted": want}) is True)
+    check("一致性：口径相反 -> 报警",
+          camera_model.check_hand_eye_consistency({"undistorted": not want}) is False)
+    check("一致性：旧版 json 无字段 -> 不判断",
+          camera_model.check_hand_eye_consistency({}) is None)
 
 
 def main():
@@ -330,7 +438,8 @@ def main():
     print("离线单测：协议 + 标定链路")
     print("=" * 70)
     for fn in (test_downlink, test_pos_frame, test_done_paths,
-               test_hand_eye, test_math, test_aligned_residual):
+               test_hand_eye, test_math, test_aligned_residual,
+               test_camera_model):
         print("\n--- %s ---" % fn.__name__)
         try:
             fn()

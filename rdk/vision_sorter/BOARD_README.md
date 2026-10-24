@@ -26,18 +26,22 @@ C100 USB相机
 
 **关键点**：检测和图像是两条独立话题，必须按时间戳配对同一帧（节点内 20 帧缓存 + 取最近 stamp）。
 
-## 二、板端只需要这 5 个文件
+## 二、板端只需要这 6 个文件
 
 | 文件 | 作用 |
 |---|---|
-| `sort_vision_node.py` | 主节点：订阅检测+图像、判色、坐标变换、串口下发 |
-| `config.py` | 全部参数：HSV 阈值、手眼矩阵、话题名、串口、触发策略 |
+| `sort_vision_node.py` | 主节点：订阅检测+图像、判色、去畸变、坐标变换、串口下发 |
+| `config.py` | 全部参数：HSV 阈值、手眼矩阵、话题名、串口、触发策略、去畸变开关 |
 | `color_classifier.py` | 纯 HSV 阈值投票（无 RGB、无中性色分支） |
 | `comm.py` | 串口协议：下行 `AA 55 … CRC8 0D`；上行 `0x06`/`0x07` 统一解析 |
 | `hand_eye.py` | `pixel_to_robot()`；优先读 `hand_eye.json`（标定结果），读不到用占位值并告警 |
+| `camera_model.py` | 去畸变（`undistortPoints`）；C100 广角四角偏 130~200px，必须在像素→毫米之前做 |
 
-标定产物 `hand_eye.json` **不是代码文件**，由 PC 上的 `tools/planar_calib.py` 生成后
+标定产物 `hand_eye.json` **不是代码文件**，由 `tools/planar_calib.py` 生成后
 再传到板端（放 `/root/vision_ws/vision_sorter/hand_eye.json` 或 `/root/vision_ws/hand_eye.json` 都会被自动找到）。
+
+内参 `camera_intrinsic.json` 同理：放 `/root/vision_ws/` 或 `vision_sorter/` 都会被自动找到。
+**它和 `hand_eye.json` 是一对**——标定时用没用去畸变，推理时就必须一样，节点启动会比对并报错。
 
 以下模块**是旧的「自己跑 BPU」架构，新节点不 import，不必上板**：
 `camera.py`、`detector.py`、`state_machine.py`、`color_tuner.py`、`yolo_postprocess.py`
@@ -217,7 +221,10 @@ PC 侧实时查看：`python tools/gantry_monitor.py --port COMx --csv trace.csv
 5. ~~**串口 color_id 依赖 `COLOR_RANGES_HSV` 的 dict 插入顺序**~~ → **已修**：编号改由 `COLOR_IDS` 显式固定，增删/重排 HSV 区间不会再让 STM32 侧编号漂移。
 6. **`HAND_EYE_M` 仍是占位值**：`hand_eye.json` 不存在时节点启动会打 `ERROR` 并反复告警，此时坐标是假的。别拿假坐标驱动龙门实动。
 7. **棋盘格不铺平 = 标定白做**：A4 纸翘 2mm，坐标就偏几毫米。必须贴死或用亚克力压平，且**铺在物料所在的那一层高度**上。
-8. **棋盘格的 180° 歧义无法用残差发现**：棋盘对 180° 旋转是对称的，正序/反向两种配对的残差**完全一样**。方向只能靠 `--rot/--mirror` 校正，平移靠实抓 `--probe` 校正。
+8. **棋盘格的 180° 歧义无法用残差发现**：棋盘对 180° 旋转是对称的，正序/反向两种配对的残差**完全一样**。方向只能靠 `--rot/--mirror` 手动校正，或者给 3 个锚点让它自动解（推荐）。
+9. **去畸变开关和手眼标定必须同口径**：`hand_eye.json` 记了标定时有没有去畸变，节点启动会比对，不一致直接 `ERROR`。表现为"稳定地偏十几毫米"，现场极难定位。
+10. **`undistortPoints` 只能用在"像素→毫米"之前**：检测框来自带畸变的原图，颜色统计用带畸变 ROI 没关系（判色不看几何），但**坐标计算必须先去畸变**。
+11. **去畸变会让画面边缘"收"进来**：这组内参四角修正 202px，等于四周的内容整体往中心缩。物料如果贴在画面最边上，去畸变前后的 ROI 位置会差很多，别拿旧截图对像素。
 
 ## 八、手眼标定：用棋盘格，不看夹爪
 
@@ -226,15 +233,49 @@ PC 侧实时查看：`python tools/gantry_monitor.py --port COMx --csv trace.csv
 所以：让棋盘格提供「像素↔毫米」的比例和方向（不需要龙门参与），
 龙门坐标只用来做最后一步对齐（1 个锚点，或干脆抓一次量偏差）。
 
-### 8.1 前置：先做相机内参（去畸变）
+### 8.1 前置：相机内参（去畸变）——**已经在用**
 
-```bash
-# PC 上，打印 tools/chessboard_9x6.png（A4，100%，不许缩放）
-python tools/camera_intrinsic_calib.py      # 空格拍 15 张 → c 解算
-# 产出 camera_intrinsic.json（640×480 的 mtx + dist）
+内参文件：`camera_intrinsic.json`（C100，640×480，标定重投影误差 0.289px）。
+**推理链路已经接上了**（`camera_model.py` + `sort_vision_node._fire()`），不用再改代码，
+只要文件在位就会被自动找到并启用。节点启动会打印：
+
+```
+[camera] 去畸变已启用 | 内参=/root/vision_ws/camera_intrinsic.json | fx=394.6 fy=374.3
+         cx=292.6 cy=228.4 | 标定重投影误差=0.289px | 边缘最大修正=202.4px
 ```
 
-内参不能跳：畸变在**画面边缘**能造成几 mm~十几 mm 误差，而物料很可能正好在边缘。
+**为什么要做**（实测这组内参的修正量）：
+
+| 画面位置 | 修正量 |
+|---|---|
+| 中心 (320,240) | 0.5 px |
+| 内圈 (160/480, 120/360) | 6~30 px |
+| 画面四角 | 130~202 px |
+
+手眼矩阵是 2×3 仿射，吸收不了非线性畸变 → 边缘物料会稳定地偏十几毫米。
+
+**内参可信度 A/B 验证**（只在怀疑内参有问题时做）：
+
+```bash
+python tools/planar_calib.py --image board.jpg --dry-run                # 带去畸变
+python tools/planar_calib.py --image board.jpg --dry-run --no-undistort # 不去畸变
+```
+
+比两次的「重投影残差」：**带内参那次更小** = 内参是对的，必须开；
+**反而更大** = 内参不可信（或标定样本没覆盖画面四角），这时先把内参重标，
+别硬开——开了反而更差。合成图上的对照：不去畸变 0.01mm，硬套这组内参变 4.48mm。
+
+> ⚠ **一致性铁律**：`hand_eye.json` 里记了标定时到底有没有去畸变。
+> 节点启动会拿它和当前开关比对，不一致直接 `ERROR`。
+> 因为这种情况表现为"稳定地偏十几毫米"，现场极难定位。
+> 换内参/换开关之后，**必须重新标手眼**。
+
+重标内参（只有换镜头、动过对焦才需要）：
+
+```bash
+python tools/camera_intrinsic_calib.py      # 空格拍 15 张 → c 解算
+# 拍的 15 张必须覆盖画面四角，否则模型在边缘会外推失真
+```
 
 ### 8.2 拍一张标定图
 
@@ -268,12 +309,44 @@ python tools/planar_calib.py --image board.jpg
 **看抽样表核对方向**：如果「最终坐标」的 X 随棋盘横移反向 → `--mirror x`；
 Y 反向 → `--mirror y`；两轴同时反（180°）→ `--rot 180`。
 
-### 8.4 对齐到龙门坐标系（二选一）
+### 8.4 对齐到龙门坐标系（三选一）
 
-| 方式 | 命令 | 需要什么 |
-|---|---|---|
-| **锚点法** | `--anchor U V X Y` | 夹爪针尖点住某个角点，读 STM32 显示的坐标 |
-| **实抓补偿法**（最省事） | `--probe DX DY` | 抓一次物料，钢尺量出偏了多少 |
+| 方式 | 命令 | 需要什么 | 精度 |
+|---|---|---|---|
+| **3 锚点法**（推荐） | `--anchors-file anchors.json` | STM32 回传坐标 + 夹爪点 3 个角点 | 最好，方向/手性全自动 |
+| **锚点法** | `--anchor U V X Y` | 夹爪点住某个角点，读坐标 | 好，但旋转/镜像靠猜 |
+| **实抓补偿法**（最省事） | `--probe DX DY` | 抓一次，钢尺量偏差 | ±2mm，要迭代 |
+
+#### 3 锚点法（不用猜 `--rot/--mirror`）
+
+棋盘格本身的摆放角度如果和龙门轴不平行，只修平移会留下系统性旋转误差
+（偏 3° → 离锚点 200mm 处就偏 10mm）。给 3 个分散的锚点，
+`planar_calib` 会直接解出 **比例 + 旋转 + 平移 + 手性**：
+
+```bash
+# ① 采锚点（板子上，串口独占，先停掉 sort_vision_node）
+python3 tools/collect_anchors.py --port /dev/ttyUSB0 --corners 0 8 53 \
+        --image /root/board.jpg --out /root/vision_ws/anchors.json
+
+# ② 解算（自动读锚点文件）
+python3 tools/planar_calib.py --image /root/board.jpg \
+        --anchors-file /root/vision_ws/anchors.json
+```
+
+采的时候把夹爪尖依次降到该角点**正上方并贴住桌面**，每次按回车；
+工具自动读 STM32 的 `0x07` 坐标（多帧取中位数），不用手抄。
+
+角点序号看 `planar_calib` 打印的抽样表。**要选分散的点**（如 0 / 8 / 53）：
+三点共线解不出旋转，工具会警告。
+
+输出里会明确告诉你解出了什么：
+
+```
+[对齐] 3 个锚点 -> 比例 1.0000 | 不镜像(纯旋转+平移) | 锚点残差 平均0.00mm 最大0.00mm
+```
+
+- 比例应 ≈ 1.0，偏离 >3% → `--square` 填错或锚点配错
+- 「镜像/不镜像」是自动判定的，**不用再手动 `--mirror`**
 
 `--probe` 直接改矩阵第 3 列（平移项），不动比例和方向，通常 2 次迭代收敛到 ±2mm：
 
@@ -295,35 +368,52 @@ scp hand_eye.json root@10.161.15.50:/root/vision_ws/vision_sorter/
 
 没标定则是 `ERROR` 告警 + 每次下发前 `WARN`，防止拿假坐标动龙门。
 
-### 8.6 可选：让 STM32 回传坐标（方案 B）
+### 8.6 让 STM32 回传坐标（方案 B，RDK 侧已完成）
 
-标定时不想手抄示教器坐标，就让固件周期性发 `0x07` 坐标帧（格式见上文），
-然后：
+RDK 侧**全部已实现并测过**，只等固件发 `0x07` 帧：
+
+| 环节 | 状态 |
+|---|---|
+| `comm.py` 解析 6 字节坐标帧、与 `0x06` 混流 | ✅ 已完成（`_pump` 统一解析泵） |
+| 节点消费坐标 + 发布 `/gantry/pos`（JSON） | ✅ 已完成（`POS_ENABLE=True` 时） |
+| `tools/gantry_monitor.py` 实时看坐标 / 存 CSV | ✅ 已完成 |
+| `tools/collect_anchors.py` 采锚点（回车记录，多帧中位数） | ✅ 已完成 |
+| STM32 固件发 `0x07` | ⬜ 等固件（协议见 `rdk/协议说明_串口帧.md`） |
+
+固件好了之后只需要改两个开关：
 
 ```python
-POS_ENABLE = True          # config.py
+POS_ENABLE = True          # config.py：解析并发布坐标
+GRAB_DONE_MODE = "byte"    # config.py：用 0x06 做完成判定，不再靠定时器猜
 ```
 
-- RDK 侧：`/gantry/pos` 话题（JSON），10Hz
-- PC 侧：`python tools/gantry_monitor.py --port COM5 --csv trace.csv`
-- 帧解析要和 `0x06` 完成字节混流，`comm.py` 的统一解析泵已经处理好，不需要额外改动
-
-> 固件没做之前保持 `POS_ENABLE=False`。
-
-### 8.7 自检（不需要相机/不需要板子）
+验证：
 
 ```bash
-python tools/planar_calib.py --self-test          # 合成棋盘图验证整条链路
-python tools/test_protocol.py                    # 协议 + 标定数学，59 项
-python tools/gantry_monitor.py --simulate        # 坐标帧解析器抗噪
+python3 tools/gantry_monitor.py --port /dev/ttyUSB0     # 板上，实时打印坐标
+python tools/gantry_monitor.py --port COM7              # PC 上
+```
+
+> 固件没做之前保持 `POS_ENABLE=False`（默认就是 False）。解析器始终兼容，
+> 收到 `0x07` 也会存进 `latest_position`，只是不发布、不消费。
+
+### 8.7 自检（不需要相机 / 不需要板子 / 不需要 STM32）
+
+```bash
+python tools/planar_calib.py --self-test          # 合成棋盘：检测→求解→对齐→3锚点→JSON
+python tools/test_protocol.py                     # 协议 + 标定 + 去畸变，80 项
+python tools/gantry_monitor.py --simulate         # 坐标帧解析器抗噪
+python tools/collect_anchors.py --simulate        # 锚点采集流程（含坏 CRC/半包）
 ```
 
 ## 九、还没闭环的事
 
-- [ ] 手眼标定（棋盘格铺平 → `planar_calib.py` → `--probe` 补偿，验收平均 ≤5mm、最大 ≤8mm）
+- [ ] 手眼标定（棋盘格铺平 → `planar_calib.py` → 3 锚点或 `--probe`，验收平均 ≤5mm、最大 ≤8mm）
 - [ ] **确认 STM32 固件已按 10 字节（无 z）解析**，CRC 在索引 8、帧尾在索引 9
-- [ ] 若采用方案 B：STM32 固件增加 `0x07` 坐标回传帧，然后 `POS_ENABLE=True`
-- [ ] 相机去畸变接入 live 管线（`camera_intrinsic.json` 已有，640×480，但节点未做 `undistort`）
+- [ ] 若采用方案 B：STM32 固件增加 `0x07` 坐标回传帧，然后 `POS_ENABLE=True` + `GRAB_DONE_MODE="byte"`
+- [ ] 实机确认去畸变后落点精度（中心 vs 边缘各抓一次，对比偏差）
+- [x] 相机去畸变接入 live 管线（`camera_model.py` + `_fire()`，含标定/推理口径一致性检查）
+- [x] RDK 侧坐标回传接收（解析 + `/gantry/pos` 话题 + 锚点采集工具）
 - [ ] 抓取循环时长标定：实测后把 `GRAB_CYCLE_S` 调准（或改 `GRAB_DONE_MODE="byte"` 由 STM32 回完成字节）
 - [ ] 串口协议与 STM32 固件对齐（视觉侧 AA55+CRC8 vs 控制侧 `chassis_driver.py` 的 0x6C 帧）
 - [ ] 决定是否重建 640×480 的 bin 以消除拉伸失真

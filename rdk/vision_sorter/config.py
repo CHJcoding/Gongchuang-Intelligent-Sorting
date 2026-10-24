@@ -87,6 +87,30 @@ HAND_EYE_JSON = ""       # 例："/root/vision_ws/hand_eye.json"
 
 Z_OFFSET = 0.0
 
+# ============ 相机内参 / 去畸变（见 camera_model.py）============
+# C100 是广角镜头，实测畸变：画面中心 0.5px，内圈 6~30px，四角 130~200px。
+# 手眼矩阵是仿射的，吸收不了这种非线性畸变，所以【像素→毫米之前】必须先去畸变，
+# 否则边缘物料会偏十几毫米。
+#
+# 内参文件来源顺序：
+#   1. 环境变量 GC_CAMERA_INTRINSIC_JSON
+#   2. 本文件的 CAMERA_INTRINSIC_JSON（非空时）
+#   3. vision_sorter/camera_intrinsic.json
+#   4. 当前工作目录 camera_intrinsic.json
+#   5. /root/vision_ws/camera_intrinsic.json（板端约定位置）
+# 生成方法：python tools/camera_intrinsic_calib.py（棋盘格拍 15 张以上，
+# 要覆盖画面四角，否则模型在边缘会外推失真）
+#
+# ⚠ 这条开关必须和手眼标定时的状态一致：
+#    planar_calib.py 找到内参就自动去畸变后再检角点（hand_eye.json 里记
+#    "undistorted": true/false）。节点启动会比对，不一致直接 ERROR。
+UNDISTORT_ENABLE = True      # 找到 camera_intrinsic.json 才真正生效
+CAMERA_INTRINSIC_JSON = ""   # 想固定路径填绝对路径；留空自动找
+
+# 图像尺寸（去畸变、越界保护、几何校验用）
+IMAGE_WIDTH = 640
+IMAGE_HEIGHT = 480
+
 # ============ ROS2 话题（D1 架构：订阅官方 dnn_node_example）============
 # 板端实测：/hobot_dnn_detection 类型 ai_msgs/PerceptionTargets，Target 字段是 rois
 DET_TOPIC = "/hobot_dnn_detection"

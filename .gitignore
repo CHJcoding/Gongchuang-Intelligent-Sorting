@@ -23,5 +23,8 @@ weights/
 # ---- 现场标定产物（每台机器不同，不入库）----
 hand_eye.json
 hand_eye.json.tmp
+anchors.json
+anchors.json.tmp
 *_corners.png
 trace.csv
+pos.csv
