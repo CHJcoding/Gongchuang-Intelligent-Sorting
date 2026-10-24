@@ -245,6 +245,14 @@ python tools/camera_intrinsic_calib.py      # 空格拍 15 张 → c 解算
 
 ### 8.3 解算
 
+先 **dry-run** 看检测质量和方向（不写文件，方向没定前别真写）：
+
+```bash
+python tools/planar_calib.py --image board.jpg --dry-run
+```
+
+确认没问题后正式写盘：
+
 ```bash
 python tools/planar_calib.py --image board.jpg
 ```
@@ -252,8 +260,9 @@ python tools/planar_calib.py --image board.jpg
 输出：
 
 - 角点检出数量（应为 9×6=54）
+- **格子像素尺寸自检**（≥15px 才稳；<12px 警告，<6px 直接报错让靠近或换大棋盘）
 - 抽样角点表：`像素(u,v)` / `棋盘(mm)` / `最终坐标(mm)`
-- 重投影残差（达标线：平均 ≤5mm 且 最大 ≤8mm）
+- 重投影残差（达标线：平均 ≤5mm 且 最大 ≤8mm，与是否加 `--rot/--mirror` 无关）
 - `hand_eye.json`（2×3 矩阵 + 元数据）
 
 **看抽样表核对方向**：如果「最终坐标」的 X 随棋盘横移反向 → `--mirror x`；

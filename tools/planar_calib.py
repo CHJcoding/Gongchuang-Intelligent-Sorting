@@ -199,6 +199,22 @@ def calibrate_from_image(image_path, cols=DEFAULT_COLS, rows=DEFAULT_ROWS,
 
     obj = board_object_points(cols, rows, square_mm)
 
+    # 尺度自检：格子在画面里太小 = 相机太远/棋盘太小，精度会崩
+    grid = pixels.reshape(rows, cols, 2)
+    step = np.concatenate([np.linalg.norm(np.diff(grid, axis=0), axis=2).ravel(),
+                           np.linalg.norm(np.diff(grid, axis=1), axis=2).ravel()])
+    cell_px = float(np.median(step))
+    if cell_px < 6:
+        raise RuntimeError(
+            "格子在画面里只有 %.1f 像素，太小了，标定精度不可用：\n"
+            "  - 相机靠近一些，或换更大的棋盘/更大的格子\n"
+            "  - 目标：每格 >= 15 像素" % cell_px)
+    elif cell_px < 12:
+        print("[警告] 格子只有 %.1f 像素，偏小；建议靠近或换大棋盘（>=15px 更稳）"
+              % cell_px)
+    else:
+        print("[检测] 格子约 %.1f 像素，尺度合适" % cell_px)
+
     # 2x3 仿射只有 6 个未知数，54 个点是超定的，直接最小二乘。
     # ⚠ 注意：检测器给出的角点起止顺序存在 180° 歧义，而残差【无法区分】——
     #   棋盘格对 180° 旋转是对称的，两种顺序的残差完全一样。
@@ -223,10 +239,11 @@ def calibrate_from_image(image_path, cols=DEFAULT_COLS, rows=DEFAULT_ROWS,
         M = shift_translation(M, X - pred[0], Y - pred[1])
         print("[对齐] 用锚点 (%.1f,%.1f)px -> (%.1f,%.1f)mm 修正平移" % (u, v, X, Y))
 
-    # 对齐后重新算残差才能反映最终矩阵质量（等价于原来，平移不改变残差）
-    pred = (M @ np.hstack([paired, np.ones((len(paired), 1))]).T).T
-    res = np.sqrt(((pred - obj) ** 2).sum(axis=1))
-    mean, mx = float(res.mean()), float(res.max())
+    # 残差必须用 B（像素->棋盘毫米）对 obj 算。
+    # ⚠ 不能用对齐后的 M 去比 obj —— M 输出的是龙门坐标，obj 是棋盘坐标，
+    #   一旦加了 --rot/--mirror/--anchor 两者就不是同一个坐标系，残差会变成垃圾。
+    #   对齐是刚体变换，不会改变标定质量，所以残差沿用 solve() 的结果。
+    info_res = (mean, mx)
 
     info = {
         "matrix": M.tolist(),
@@ -234,6 +251,7 @@ def calibrate_from_image(image_path, cols=DEFAULT_COLS, rows=DEFAULT_ROWS,
         "max_residual": round(mx, 4),
         "n_points": int(len(paired)),
         "square_mm": float(square_mm),
+        "cell_px": round(cell_px, 2),
         "rot": int(rot),
         "mirror": str(mirror),
         "image": os.path.abspath(image_path),
@@ -456,6 +474,8 @@ def main(argv=None):
     ap.add_argument("--out", default=DEFAULT_OUT, help="输出 hand_eye.json 路径")
     ap.add_argument("--points-out", help="额外导出点对 CSV（u,v,x_mm,y_mm）")
     ap.add_argument("--show", action="store_true", help="保存角点可视化图")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="只检测+预览，不写 hand_eye.json（方向没定前先这么跑）")
     ap.add_argument("--self-test", action="store_true", help="用合成图自检，无需相机")
     args = ap.parse_args(argv)
 
@@ -492,9 +512,14 @@ def main(argv=None):
                                    info["max_residual"], info["n_points"]))
     print("矩阵: %s" % (info["matrix"],))
 
+    if args.dry_run:
+        print("\n[dry-run] 没有写 hand_eye.json。确认方向和尺度没问题后，去掉 --dry-run 再跑一次。")
+        return 0
+
     hand_eye.save_json(args.out, M, pixels, obj,
                        info["mean_residual"], info["max_residual"],
                        extra={"square_mm": info["square_mm"],
+                              "cell_px": info["cell_px"],
                               "rot": info["rot"], "mirror": info["mirror"],
                               "image": info["image"],
                               "undistorted": info["undistorted"],

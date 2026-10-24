@@ -18,6 +18,11 @@ import tempfile
 
 import numpy as np
 
+try:
+    import cv2
+except ImportError:          # 没装 opencv 时跳过"合成棋盘"相关回归项
+    cv2 = None
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_HERE)
 # 兼容两种布局：仓库里 tools/ + rdk/vision_sorter/；板端 /root/vision_ws/tools + vision_sorter
@@ -279,12 +284,53 @@ def test_math():
     check("3 点时报告提示点数不足", "点数" in rep, rep)
 
 
+def test_aligned_residual():
+    """回归：加 --mirror/--anchor 后残差不能被算成垃圾。
+
+    历史 bug：残差用「对齐后的 M」去比「棋盘 obj」。M 输出龙门坐标、
+    obj 是棋盘坐标，一旦加了对齐两者不是同一坐标系，残差会变成 125mm 这种假数据。
+    """
+    if cv2 is None:
+        print("   (跳过：没装 opencv)")
+        return
+    cols, rows, square, sq = 9, 6, 25.0, 24
+    board = planar_calib._render_board(cols, rows, sq)
+    G = np.array([[1.15, 0.0, 80.0], [0.0, 1.15, 60.0], [0.0, 0.0, 1.0]])
+    W = G @ np.diag([square / sq, square / sq, 1.0])
+    canvas = cv2.warpPerspective(board, W, (760, 620),
+                                 flags=cv2.INTER_LINEAR, borderValue=255)
+    tmp = tempfile.mkdtemp(prefix="cal_")
+    path = os.path.join(tmp, "board.png")
+    cv2.imencode(".png", canvas)[1].tofile(path)
+
+    plain, px, obj, _ = planar_calib.calibrate_from_image(path)
+    check("无对齐时残差达标", plain["mean_residual"] < 1.0, plain["mean_residual"])
+    check("尺度自检给出 cell_px(>15)",
+          plain.get("cell_px", 0) > 15, plain.get("cell_px"))
+
+    mir, _px2, _o2, _ = planar_calib.calibrate_from_image(path, mirror="y")
+    check("mirror 后残差仍达标（回归点）",
+          mir["mean_residual"] < 1.0, mir["mean_residual"])
+    check("mirror=y 只翻第二行",
+          np.allclose(mir["matrix"][0], plain["matrix"][0], atol=1e-4) and
+          np.allclose(mir["matrix"][1], -np.array(plain["matrix"][1]), atol=1e-4),
+          (mir["matrix"], plain["matrix"]))
+
+    u, v = float(px[0][0]), float(px[0][1])
+    anc, _px3, _o3, _ = planar_calib.calibrate_from_image(
+        path, anchor=(u, v, 500.0, 300.0))
+    g = np.array(anc["matrix"]) @ np.array([u, v, 1.0])
+    check("锚点把角点 0 钉到 (500,300)",
+          abs(g[0] - 500.0) < 1e-6 and abs(g[1] - 300.0) < 1e-6, g)
+    check("锚点后残差仍达标", anc["mean_residual"] < 1.0, anc["mean_residual"])
+
+
 def main():
     print("=" * 70)
     print("离线单测：协议 + 标定链路")
     print("=" * 70)
     for fn in (test_downlink, test_pos_frame, test_done_paths,
-               test_hand_eye, test_math):
+               test_hand_eye, test_math, test_aligned_residual):
         print("\n--- %s ---" % fn.__name__)
         try:
             fn()
