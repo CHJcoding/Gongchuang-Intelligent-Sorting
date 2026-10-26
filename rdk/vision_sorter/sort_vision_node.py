@@ -134,6 +134,7 @@ class SortVisionNode(Node):
         self.stat_color_fail = 0
         self.stat_blocked = 0              # 被安全闸拦下的次数
         self.stat_send_fail = 0            # 串口写失败次数
+        self.stat_edge = 0                 # 目标落在去畸变覆盖区外的次数
         self.last_reopen_t = 0.0           # 上次尝试重连串口的时刻
 
         # ---- 发布 ----
@@ -494,9 +495,19 @@ class SortVisionNode(Node):
 
         cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
         # 广角畸变修正：必须做在"像素->毫米"之前。手眼矩阵是仿射的，
-        # 吸收不了非线性畸变（C100 四角实测偏 130~200px ≈ 十几毫米）。
+        # 吸收不了非线性畸变（C100 实测 r=0.64 处已修正 14px ≈ 2mm，越往外越大）。
         # planar_calib 标定时也是先去畸变再检角点，两边口径一致。
         cx_u, cy_u = camera_model.undistort_point(cx, cy)
+        # 内参样本只覆盖到 valid_radius，超出就是外推：照发，但必须喊出来
+        level, why_r = camera_model.check_point(cx, cy)
+        if level == "ok":
+            pass
+        else:
+            self.stat_edge += 1
+            self.get_logger().warn(
+                "目标在去畸变覆盖区之外：%s（原始像素 %.0f,%.0f）→ 该处毫米值不可靠，"
+                "把物料往画面中间挪" % (why_r, cx, cy),
+                throttle_duration_sec=10.0)
         x_mm, y_mm, z_mm = pixel_to_robot(cx_u, cy_u)
 
         # ---- 安全闸：没标定 / 串口掉了，一律不许下发 ----
@@ -617,10 +628,10 @@ class SortVisionNode(Node):
         self._try_reopen_serial()
         self.get_logger().info(
             "统计: 检测消息=%d 含目标=%d 下发=%d 屏蔽=%d 颜色失败=%d "
-            "安全闸拦截=%d 串口失败=%d 帧缓存=%d busy=%s 串口=%s"
+            "安全闸拦截=%d 串口失败=%d 边缘外推=%d 帧缓存=%d busy=%s 串口=%s"
             % (self.stat_det, self.stat_hit, self.stat_fire, self.stat_blank,
                self.stat_color_fail, self.stat_blocked, self.stat_send_fail,
-               len(self.frames), self.busy,
+               self.stat_edge, len(self.frames), self.busy,
                "模拟" if self.serial_sim else
                ("正常" if self.serial_ok else "故障")))
 

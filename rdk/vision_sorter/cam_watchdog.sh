@@ -22,13 +22,34 @@
 
 LAUNCH_LOG=/root/vision_ws/det.log
 WD_LOG=/root/vision_ws/watchdog.log
-VIDEO=/dev/video0
+# 相机设备：优先用 udev 稳定链接 /dev/cam0。
+# 为什么不用 /dev/video0：USB 一旦弹一下重枚举，节点号会变（实测变成 /dev/video1），
+# 写死 /dev/video0 的 launch 会永远报 "Cannot open device"。
+# 规则见 /etc/udev/rules.d/60-gc-camera.rules（按 idVendor 0c45 建 cam0 链接）。
+CAM_DEV="${GC_CAM_DEV:-/dev/cam0}"
 CHECK=5              # 每 5 秒检查一次
 STALE=18             # 日志超过 18 秒没更新 = 卡死
 QUICK_WINDOW=120     # 退避窗口
 MAX_QUICK=4          # 窗口内最多重启几次
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$WD_LOG"; }
+
+# ---- 设备解析：cam0 不在就扫一遍 /dev/video*，挑能出 MJPG 的那个 ----
+resolve_cam() {
+    if [ -e "$CAM_DEV" ]; then
+        return 0
+    fi
+    local v
+    for v in /dev/video*; do
+        [ -e "$v" ] || continue
+        if timeout 5 v4l2-ctl -d "$v" --list-formats 2>/dev/null | grep -q MJPG; then
+            CAM_DEV="$v"
+            log "⚠ /dev/cam0 不存在，退用 $v（建议补 udev 规则，别让节点号漂）"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # ---- 清掉所有相机相关残留（含孤儿 websocket）----
 cleanup_all() {
@@ -49,7 +70,7 @@ cleanup_all() {
 wait_camera_ready() {
     local i
     for i in $(seq 1 15); do
-        if [ -e "$VIDEO" ] && timeout 5 v4l2-ctl -d "$VIDEO" --get-fmt-video >/dev/null 2>&1; then
+        if [ -e "$CAM_DEV" ] && timeout 5 v4l2-ctl -d "$CAM_DEV" --get-fmt-video >/dev/null 2>&1; then
             return 0
         fi
         sleep 2
@@ -63,8 +84,10 @@ WINDOW_START=$(date +%s)
 
 while true; do
     cleanup_all
+    resolve_cam
+    export GC_CAM_DEV="$CAM_DEV"
     if ! wait_camera_ready; then
-        log "⚠ 相机 $VIDEO 打不开（设备消失或不可用），等 15s 再试"
+        log "⚠ 相机 $CAM_DEV 打不开（设备消失或不可用），等 15s 再试"
         sleep 15
         continue
     fi
@@ -84,7 +107,7 @@ while true; do
         if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then
             FAIL="launch 主进程退出"; break
         fi
-        [ -e "$VIDEO" ] || { FAIL="相机设备消失"; break; }
+        [ -e "$CAM_DEV" ] || { FAIL="相机设备消失"; break; }
 
         # 前 25 秒是 warmup（BPU 初始化慢），不判卡死
         if [ "$UP" -gt 25 ]; then

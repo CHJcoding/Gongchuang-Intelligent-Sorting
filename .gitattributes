@@ -1,0 +1,9 @@
+# shell / udev / python 一律用 LF：这些文件会被 scp 到 Linux 板子上直接执行，
+# CRLF 会让 bash 报 "$'\r': command not found"、udev 规则的匹配也会失效。
+*.sh        text eol=lf
+*.rules     text eol=lf
+*.py        text eol=lf
+*.md        text eol=lf
+*.json      text eol=lf
+*.txt       text eol=lf
+*.yaml      text eol=lf

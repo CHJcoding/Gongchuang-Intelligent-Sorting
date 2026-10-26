@@ -84,14 +84,89 @@ def imread_unicode(path):
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
+def _distort_px(mtx, dist, pts):
+    """去畸变像素 -> 带畸变像素（cv2.undistortPoints 的反方向）。"""
+    k = (list(np.asarray(dist, dtype=np.float64).ravel()) + [0.0] * 8)
+    k1, k2, p1, p2, k3 = k[0], k[1], k[2], k[3], k[4]
+    fx, fy = float(mtx[0, 0]), float(mtx[1, 1])
+    cx, cy = float(mtx[0, 2]), float(mtx[1, 2])
+    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
+    x = (pts[:, 0] - cx) / fx
+    y = (pts[:, 1] - cy) / fy
+    r2 = x * x + y * y
+    radial = 1.0 + k1 * r2 + k2 * r2 ** 2 + k3 * r2 ** 3
+    xd = x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x)
+    yd = y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y
+    return np.column_stack([fx * xd + cx, fy * yd + cy])
+
+
+def intrinsic_selfcheck(mtx, dist, size=(640, 480), rt_tol_px=0.5, r_limit=0.9):
+    """内参自检，和 rdk/vision_sorter/camera_model.is_model_sane 同口径。
+
+    为什么标定前也要查：内参若是"折叠"的（正畸变不单调），cv2.undistort 会把
+    像素揉到一起，标出来的手眼矩阵是错的，而且表现是稳定地偏、现场查不出来。
+    返回 (ok, 说明)。
+    """
+    try:
+        mtx = np.asarray(mtx, dtype=np.float64)
+        dist = np.asarray(dist, dtype=np.float64).ravel()
+    except Exception:                                   # noqa: BLE001
+        return False, "内参不是数字"
+    if not np.all(np.isfinite(mtx)) or not np.all(np.isfinite(dist)):
+        return False, "内参里有 nan/inf"
+    w, h = int(size[0]), int(size[1])
+    fx, fy = float(mtx[0, 0]), float(mtx[1, 1])
+    cx, cy = float(mtx[0, 2]), float(mtx[1, 2])
+    if abs(fx) < 1e-6 or abs(fy) < 1e-6:
+        return False, "fx/fy 为 0"
+    # (1) 径向单调（画面范围内不能折叠）
+    r_max = max((((u - cx) / fx) ** 2 + ((v - cy) / fy) ** 2) ** 0.5
+                for u, v in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)))
+    k = (list(dist) + [0.0] * 8)
+    k1, k2, k3 = k[0], k[1], k[4]
+    r = np.linspace(1e-6, r_max, 400)
+    if not np.all(np.diff(r * (1.0 + k1 * r ** 2 + k2 * r ** 4 + k3 * r ** 6)) > 0):
+        return False, "径向畸变在画面范围内不单调（边缘折叠），undistort 结果不可信"
+    # (2) 工作区正逆一致
+    pts = [(i * (w - 1) / 17.0, j * (h - 1) / 13.0)
+           for i in range(1, 17) for j in range(1, 13)]
+    pts = [p for p in pts
+           if (((p[0] - cx) / fx) ** 2 + ((p[1] - cy) / fy) ** 2) ** 0.5 <= r_limit]
+    src = np.asarray(pts, dtype=np.float64).reshape(-1, 1, 2)
+    ideal = np.asarray(cv2.undistortPoints(src, mtx, dist, P=mtx),
+                       dtype=np.float64).reshape(-1, 2)
+    if not np.all(np.isfinite(ideal)):
+        return False, "undistortPoints 写出了 nan/inf"
+    worst = float(np.max(np.linalg.norm(_distort_px(mtx, dist, ideal) -
+                                        np.asarray(pts), axis=1)))
+    if worst > rt_tol_px:
+        return False, "工作区正逆一致性最差 %.1fpx（>%.1fpx）" % (worst, rt_tol_px)
+    return True, "自检通过（工作区正逆误差 %.2fpx）" % worst
+
+
 def load_intrinsic(path):
-    """读 camera_intrinsic.json，返回 (mtx, dist) 或 (None, None)。"""
+    """读 camera_intrinsic.json，返回 (mtx, dist) 或 (None, None)。
+
+    读到了就先自检：折叠的内参会让 undistort 输出垃圾，标出来的手眼矩阵是错的，
+    与其后面查一个月，不如这里直接拒绝。
+    """
     if not path or not os.path.isfile(path):
         return None, None
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     mtx = np.array(data["mtx"], dtype=np.float64)
     dist = np.array(data.get("dist", []), dtype=np.float64).reshape(-1)
+    size = data.get("size") or (640, 480)
+    ok, why = intrinsic_selfcheck(mtx, dist, size=size)
+    if not ok:
+        raise RuntimeError(
+            "内参自检不通过（%s）：%s\n"
+            "  折叠/不自洽的模型会让去畸变输出垃圾坐标，用它标出来的手眼矩阵必然是错的。\n"
+            "  → 重新标内参（tools/board_calib_server.py 采集 + tools/eval_intrinsic.py "
+            "--recalib-flags no_tangent 解算），\n"
+            "     或者确认要在【原始像素】下标定：加 --no-undistort（两侧口径必须一致）。"
+            % (os.path.basename(path), why))
+    print("[内参] %s  %s" % (os.path.basename(path), why))
     return mtx, dist
 
 
@@ -244,7 +319,8 @@ def calibrate_from_image(image_path, cols=DEFAULT_COLS, rows=DEFAULT_ROWS,
         undistorted = True
     else:
         print("[提示] 没提供/没找到内参 JSON，跳过去畸变。"
-              "画面边缘可能有几 mm 系统误差，建议先跑 camera_intrinsic_calib.py")
+              "画面边缘可能有几 mm 系统误差，建议先跑 tools/board_calib_server.py "
+              "+ tools/eval_intrinsic.py --recalib-flags no_tangent 生成 camera_intrinsic.json")
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     pixels = detect_corners(gray, cols, rows)

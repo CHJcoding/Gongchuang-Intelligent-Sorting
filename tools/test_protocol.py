@@ -386,14 +386,16 @@ def test_camera_model():
               (r_in, r_out))
 
         # ---- k1<0（桶形）：方向必须相反 ----
+        # 用 -0.08 而不是 -0.3：后者在画面内就已经"折叠"（正畸变不再单调），
+        # 那种内参正是 is_model_sane 要拦下来的，不该拿来测"修正方向"。
         p1b = os.path.join(tmp, "k1neg.json")
         with open(p1b, "w", encoding="utf-8") as f:
             json.dump({"mtx": [[400.0, 0, 320.0], [0, 400.0, 240.0], [0, 0, 1]],
-                       "dist": [-0.3, 0.0, 0.0, 0.0, 0.0]}, f)
+                       "dist": [-0.08, 0.0, 0.0, 0.0, 0.0]}, f)
         camera_model.candidate_paths = lambda: [p1b]
         camera_model.reload()
-        # 注意用 (100,200) 而不是四角：k1<0 在很远的地方会让模型"折叠"，
-        # OpenCV 迭代不收敛会原样返回（这是它自身行为，不是我们的 bug）。
+        check("k1<0 内参能启用（画面内未折叠）", camera_model.is_active() is True,
+              camera_model.NOTE)
         u1, v1 = camera_model.undistort_point(100, 200)
         r_neg_in = np.hypot(100 - 320, 200 - 240)
         check("k1<0：修正后径向变大（往外扩）",
@@ -432,6 +434,88 @@ def test_camera_model():
           camera_model.check_hand_eye_consistency({"undistorted": not want}) is False)
     check("一致性：旧版 json 无字段 -> 不判断",
           camera_model.check_hand_eye_consistency({}) is None)
+
+
+def test_intrinsic_quality():
+    """内参质量闸：真内参可信、坏内参（边缘折叠）必须被拒。
+
+    2026-10-26 重标之前仓库里那套内参就是"折叠"的：r=1.0 处正逆差 379px，
+    undistortPoints 给的是垃圾坐标。所以除了能算出数，还要能自己发现数算坏了。
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    real = os.path.join(root, "camera_intrinsic.json")
+    old = camera_model.candidate_paths
+    if not os.path.isfile(real):                     # 板端 tools/ 是单独拷的
+        check("没有 camera_intrinsic.json -> 跳过质量检查", True)
+        return
+    try:
+        camera_model.candidate_paths = lambda: [real]
+        camera_model.reload()
+        check("真内参：能加载并启用", camera_model.is_active() is True,
+              camera_model.NOTE)
+        check("真内参：模型=no_tangent", camera_model.MODEL == "no_tangent",
+              camera_model.MODEL)
+        d = np.asarray(camera_model.D, dtype=float).ravel()
+        check("真内参：切向项 p1=p2=0", abs(d[2]) < 1e-9 and abs(d[3]) < 1e-9,
+              d.tolist())
+        check("真内参：模型自检通过", camera_model.is_model_sane()[0] is True,
+              camera_model.is_model_sane())
+        newK = np.array(camera_model.K, dtype=float)
+        newD = np.array(camera_model.D, dtype=float).ravel()
+        check("真内参：径向单调", camera_model.radial_is_monotonic() is True)
+
+        # 画面四角的修正量：太大说明模型夸张，太小说明没生效
+        mc = camera_model.max_correction_px()
+        check("真内参：边缘修正量在 40~120px 之间", 40.0 < mc < 120.0, mc)
+
+        # 等半径修正量必须各向同性（纯径向模型，极差 <0.2px）
+        vals = []
+        for ang in range(0, 360, 45):
+            a = np.radians(ang)
+            u = 320.365 + 0.5 * 314.885 * np.cos(a)
+            v = 255.356 + 0.5 * 317.042 * np.sin(a)
+            uu, vv = camera_model.undistort_point(u, v)
+            vals.append(float(np.hypot(uu - u, vv - v)))
+        check("真内参：r=0.5 修正量各向同性", max(vals) - min(vals) < 0.2,
+              [round(x, 2) for x in vals])
+
+        # 覆盖区判定
+        check("覆盖：主点附近在覆盖内",
+              camera_model.is_covered(320, 255) is True)
+        check("覆盖：画面正上方 235px 处 = 外推",
+              camera_model.is_covered(320, 20) is False)
+        check("覆盖：远角等级=far", camera_model.check_point(5, 5)[0] == "far",
+              camera_model.check_point(5, 5))
+        check("覆盖：主点等级=ok", camera_model.check_point(320, 255)[0] == "ok")
+
+        # ---- 折叠模型必须被拦下（旧内参原样）----
+        tmp = tempfile.mkdtemp(prefix="camq_")
+        fold = os.path.join(tmp, "fold.json")
+        with open(fold, "w", encoding="utf-8") as f:
+            json.dump({"mtx": [[394.607, 0, 292.638], [0, 374.271, 228.429],
+                               [0, 0, 1]],
+                       "dist": [0.898878, -1.972433, -0.001387, -0.100980,
+                                2.245554]}, f)
+        camera_model.candidate_paths = lambda: [fold]
+        camera_model.reload()
+        check("折叠内参：拒绝启用（不拿垃圾坐标去算毫米）",
+              camera_model.is_active() is False, camera_model.NOTE)
+        check("折叠内参：说明里点出模型不合理",
+              "不合理" in (camera_model.NOTE or ""), camera_model.NOTE)
+        check("折叠内参：未启用时像素直通",
+              np.allclose(camera_model.undistort_points([[0, 0]]), [[0, 0]]))
+
+        # ---- 标定工具必须用同一把尺子（否则 planar_calib 会拿垃圾内参标手眼）----
+        check("planar_calib 自检：新内参通过",
+              planar_calib.intrinsic_selfcheck(newK, newD, (640, 480))[0] is True,
+              planar_calib.intrinsic_selfcheck(newK, newD, (640, 480)))
+        with open(fold, encoding="utf-8") as f:
+            bad = json.load(f)
+        ok_bad, why_bad = planar_calib.intrinsic_selfcheck(bad["mtx"], bad["dist"])
+        check("planar_calib 自检：旧(折叠)内参被拒", ok_bad is False, why_bad)
+    finally:
+        camera_model.candidate_paths = old
+        camera_model.reload()
 
 
 def test_safety():
@@ -540,7 +624,8 @@ def main():
     print("=" * 70)
     for fn in (test_downlink, test_pos_frame, test_done_paths,
                test_hand_eye, test_math, test_aligned_residual,
-               test_camera_model, test_safety, test_hsv_calib):
+               test_camera_model, test_intrinsic_quality,
+               test_safety, test_hsv_calib):
         print("\n--- %s ---" % fn.__name__)
         try:
             fn()

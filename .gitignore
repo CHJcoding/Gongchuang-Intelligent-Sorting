@@ -28,3 +28,9 @@ anchors.json.tmp
 *_corners.png
 trace.csv
 pos.csv
+# ---- 临时抓图（现场调试产物）----
+frame_*.jpg
+frame_now.jpg
+calib_corners.png
+capture/
+capture_round1_*/

@@ -26,7 +26,7 @@ C100 USB相机
 
 **关键点**：检测和图像是两条独立话题，必须按时间戳配对同一帧（节点内 20 帧缓存 + 取最近 stamp）。
 
-## 二、板端只需要这 6 个文件
+## 二、板端只需要这 7 个 .py + 4 个 .sh
 
 | 文件 | 作用 |
 |---|---|
@@ -35,13 +35,21 @@ C100 USB相机
 | `color_classifier.py` | 纯 HSV 阈值投票（无 RGB、无中性色分支） |
 | `comm.py` | 串口协议：下行 `AA 55 … CRC8 0D`；上行 `0x06`/`0x07` 统一解析 |
 | `hand_eye.py` | `pixel_to_robot()`；优先读 `hand_eye.json`（标定结果），读不到用占位值并告警 |
-| `camera_model.py` | 去畸变（`undistortPoints`）；C100 广角四角偏 130~200px，必须在像素→毫米之前做 |
+| `safety.py` | 下发前的两道闸：没标定 / 串口掉了 → 拒绝下发（纯逻辑，可离线测） |
+| `camera_model.py` | 去畸变（`undistortPoints`）+ 内参自检；料盘边缘修正 ~14px，必须在像素→毫米之前做 |
+| `stop_all.sh` | 无脑清场：screen、launch、相机节点、孤儿 websocket、nginx、端口 8000 |
+| `cam_watchdog.sh` | 检测节点守护（v2）：温和重启、等相机就绪、退避、自动解析相机设备 |
+| `run_det.sh` | 检测 launch 入口（设备号走 `GC_CAM_DEV`，默认 `/dev/cam0`） |
+| `run_sort.sh` | 业务节点入口 |
+
+另需一次性安装 `rdk/udev/60-gc-camera.rules`（把 C100 固定成 `/dev/cam0`），见第三节 2.5。
 
 标定产物 `hand_eye.json` **不是代码文件**，由 `tools/planar_calib.py` 生成后
 再传到板端（放 `/root/vision_ws/vision_sorter/hand_eye.json` 或 `/root/vision_ws/hand_eye.json` 都会被自动找到）。
 
 内参 `camera_intrinsic.json` 同理：放 `/root/vision_ws/` 或 `vision_sorter/` 都会被自动找到。
 **它和 `hand_eye.json` 是一对**——标定时用没用去畸变，推理时就必须一样，节点启动会比对并报错。
+**内参一改，旧手眼矩阵立刻作废**（像素坐标系变了），必须重标。
 
 以下模块**是旧的「自己跑 BPU」架构，新节点不 import，不必上板**：
 `camera.py`、`detector.py`、`state_machine.py`、`color_tuner.py`、`yolo_postprocess.py`
@@ -57,14 +65,25 @@ pip3 install pyserial numpy opencv-python   # hobot_dnn 系统自带
 ```bash
 # 本地 GC 根目录执行
 scp -r rdk/vision_sorter/ root@<板子IP>:/root/vision_ws/
+# 内参（标定产物，必须和这一版代码配套）
+scp camera_intrinsic.json root@<板子IP>:/root/vision_ws/
 ```
-板端已存在 `/root/vision_ws/yolov5_best.bin`、`yolov5_best_config.json`、`labels.list` 时为增量覆盖。
+
+### 2.5 装 udev 规则（**一次性，别跳过**）
+```bash
+# 让 C100 固定成 /dev/cam0。不做这步，USB 一弹节点号就漂，
+# /dev/video0 消失后所有写死它的启动脚本都会失败。
+scp rdk/udev/60-gc-camera.rules root@<板子IP>:/etc/udev/rules.d/
+ssh root@<板子IP> 'udevadm control --reload-rules && udevadm trigger --subsystem-match=video4linux'
+ssh root@<板子IP> 'ls -l /dev/cam0'    # 应指向 videoN（index 0 那个）
+```
 
 ### 3. 启动顺序（两个终端）
 
-> 板端已经放好了三个脚本（不在仓库里，是现场生成的）：
-> `stop_all.sh` 清场、`cam_watchdog.sh` 托管检测节点、`run_det.sh` / `run_sort.sh`。
-> **推荐直接用守护脚本，别手动起第二份 launch**（`/dev/video0` 是独占的）。
+> 板端已放好整套脚本（仓库里 `rdk/vision_sorter/` 下同名文件）：
+> `stop_all.sh` 清场、`cam_watchdog.sh` 托管检测节点、`run_det.sh` / `run_sort.sh` 两个入口。
+> **推荐直接用守护脚本，别手动起第二份 launch**（一个相机只能被一个进程打开）。
+> 四个脚本都已进仓库，直接在本地改、scp 覆盖，不要再在板子上手改（改了会漂）。
 
 ```bash
 bash /root/vision_ws/stop_all.sh                       # 先清场（含孤儿 websocket）
@@ -81,7 +100,7 @@ export CAM_TYPE=usb
 ros2 launch dnn_node_example dnn_node_example.launch.py \
   dnn_example_config_file:=/root/vision_ws/yolov5_best_config.json \
   dnn_example_image_width:=640 dnn_example_image_height:=480 \
-  device:=/dev/video0
+  device:=/dev/cam0
 ```
 
 **终端 B：视觉分拣节点**（`run_sort.sh` 里就是这段）
@@ -238,8 +257,14 @@ PC 侧实时查看：`python tools/gantry_monitor.py --port COMx --csv trace.csv
 8. **棋盘格的 180° 歧义无法用残差发现**：棋盘对 180° 旋转是对称的，正序/反向两种配对的残差**完全一样**。方向只能靠 `--rot/--mirror` 手动校正，或者给 3 个锚点让它自动解（推荐）。
 9. **去畸变开关和手眼标定必须同口径**：`hand_eye.json` 记了标定时有没有去畸变，节点启动会比对，不一致直接 `ERROR`。表现为"稳定地偏十几毫米"，现场极难定位。
 10. **`undistortPoints` 只能用在"像素→毫米"之前**：检测框来自带畸变的原图，颜色统计用带畸变 ROI 没关系（判色不看几何），但**坐标计算必须先去畸变**。
-11. **去畸变会让画面边缘"收"进来**：这组内参四角修正 202px，等于四周的内容整体往中心缩。物料如果贴在画面最边上，去畸变前后的 ROI 位置会差很多，别拿旧截图对像素。
+11. **去畸变会让画面边缘"收"进来**：这组内参四角修正 79.6px（旧的可笑内参报的是 202px），等于四周内容整体往中心缩。物料贴在画面最边上时，去畸变前后位置差很多，别拿旧截图对像素。
 12. **未标定时节点不再"只警告照发"了**：现在直接拒绝下发（`safety.py`），日志会打 `BLOCKED_UNCALIBRATED`，`下发=` 计数不涨。这是刻意的——台架演示要加 `-p allow_uncalibrated:=true`，详见第十节。别把它当 bug 去查。
+13. **重投影误差小 ≠ 内参对**：旧内参重投影 0.289px（比新的 0.257px 还漂亮），但它把直线掰弯了（单应残余 2.5px、边缘折叠）。判内参要用「去畸变后平面棋盘的单应残余」，不是 `calibrateCamera` 自己报的残差——那个是拟合残差，模型过拟合时反而更小。
+14. **切向项 p1/p2 在手持标定里基本是假的**：纸一弯，切向项就被喂成 p1≈-0.02，修正量变得方向相关，边缘还会不可逆。本项目固定 p1=p2=0（`--recalib-flags no_tangent`），牺牲 0.05px 单应残余换各向同性和全幅可逆。
+15. **`cv2.undistortPoints` 在画面极角不收敛**：5 次固定点迭代，归一化半径 >1.1 处误差能到几十 px（牛顿法解同一模型是 0）。所以别拿画面最角上的像素验证内参，也别在那里摆物料。
+16. **`/dev/video0` 是独占的，且 USB 掉线后会变成 `/dev/video1`**：第二条 launch 会报 `Cannot open device`；USB 弹一下重枚举后 `/dev/video0` 直接消失（这时 `hobot_usb_cam` 报的是 `Invalid v4l2 format`，极容易误判成相机坏了）。**已根治**：装 `rdk/udev/60-gc-camera.rules` 建固定链接 `/dev/cam0`，`run_det.sh` / `cam_watchdog.sh` 一律用 `/dev/cam0`；链接缺失时守护会自动扫 `/dev/video*` 挑能出 MJPG 的那个兜底。
+17. **别在非交互 shell 里跑 ROS2**：`.bashrc` 只在交互 shell 里 source TROS，`bash -c "ros2 ..."` 会报 `ModuleNotFoundError: No module named 'rclpy'`。任何脚本里跑 ROS2 之前必须显式 `source /opt/tros/humble/setup.bash`。
+18. **`--square` 一定是量出来的，不是印出来的**：A4 打印会被驱动缩放 96%~100%，本项目实测按 24mm 用；格子边长错 4%，平移量就整体错 4%。
 
 ## 八、手眼标定：用棋盘格，不看夹爪
 
@@ -248,49 +273,78 @@ PC 侧实时查看：`python tools/gantry_monitor.py --port COMx --csv trace.csv
 所以：让棋盘格提供「像素↔毫米」的比例和方向（不需要龙门参与），
 龙门坐标只用来做最后一步对齐（1 个锚点，或干脆抓一次量偏差）。
 
-### 8.1 前置：相机内参（去畸变）——**已经在用**
+### 8.1 前置：相机内参（去畸变）——**已重标，2026-10-26**
 
-内参文件：`camera_intrinsic.json`（C100，640×480，标定重投影误差 0.289px）。
-**推理链路已经接上了**（`camera_model.py` + `sort_vision_node._fire()`），不用再改代码，
-只要文件在位就会被自动找到并启用。节点启动会打印：
+内参文件：`camera_intrinsic.json`（C100，640×480）。**推理链路已经接上**
+（`camera_model.py` + `sort_vision_node._fire()`），文件在位就自动启用。启动打印：
 
 ```
-[camera] 去畸变已启用 | 内参=/root/vision_ws/camera_intrinsic.json | fx=394.6 fy=374.3
-         cx=292.6 cy=228.4 | 标定重投影误差=0.289px | 边缘最大修正=202.4px
+[camera] 去畸变已启用 | 内参=/root/vision_ws/camera_intrinsic.json | fx=314.9 fy=317.0
+         cx=320.4 cy=255.4 | 模型=no_tangent | 标定重投影误差=0.257px
+         | 可信半径=0.64(画面归一化) | 边缘最大修正=79.6px
+  ⚠ 画面四角往返误差 40px：那里归一化半径 >1.1，cv2 迭代不收敛 + 内参外推，别信画面角上的毫米值
 ```
 
-**为什么要做**（实测这组内参的修正量）：
+**旧内参是坏的，已经换掉**。判断依据不是重投影误差（旧的 0.289px 也很漂亮），
+而是「去畸变后平面棋盘的单应残余」——正确去畸变后，网格角点必须能被一个 2D 单应
+精确解释，不会掰弯：
 
-| 画面位置 | 修正量 |
-|---|---|
-| 中心 (320,240) | 0.5 px |
-| 内圈 (160/480, 120/360) | 6~30 px |
-| 画面四角 | 130~202 px |
+| 内参 | 单应残余（12 张） | 正逆一致性 | 结论 |
+|---|---|---|---|
+| 旧（fx=394.6，含切向项） | **2.498 px** | r=1.0 差 **379 px**（模型折叠） | 把直线掰弯了，丢掉 |
+| 新 no_tangent（fx=314.9） | **1.315 px** | 全幅 ≤0.22 px | 采用 |
+| 干脆不去畸变 | 1.871 px | — | 旧内参比它更差 |
 
-手眼矩阵是 2×3 仿射，吸收不了非线性畸变 → 边缘物料会稳定地偏十几毫米。
+**这组内参的修正量**（用来判断"要不要去畸变"）：
 
-**内参可信度 A/B 验证**（只在怀疑内参有问题时做）：
+| 归一化半径 r | 旧 vs 新坐标差 | 说明 |
+|---|---|---|
+| 0.20 | 2.7 px | 正中间，可忽略 |
+| 0.40 | 6.6~7.4 px | 料盘内圈，约 1mm |
+| 0.50 | 9.1~14.1 px | 料盘边缘，1.5~2mm |
+| 0.64 | 14.8~26.2 px | 再往外，3~4mm |
+
+手眼矩阵是 2×3 仿射，吸收不了非线性畸变 → 边缘物料会稳定地偏出去，
+这就是当初「边缘有几 mm 系统误差」的来源。
+
+**两条硬约束（别踩）**：
+
+1. **`valid_radius = 0.64`**：样本角点只覆盖到这里（p90=0.555 + 余量）。
+   超出部分是外推，节点会打 `目标在去畸变覆盖区之外…毫米值不可靠`，
+   统计行 `边缘外推=N`。料盘在工作区内，所以正常；**别把物料摆到画面最边上**。
+2. **只有一个径向模型，切向项 p1=p2=0**：手持打印纸不平会把切向项喂成假值
+   （拟合出来 p1≈-0.02，真实镜头 <0.005），导致修正量方向相关（实测 5.3 倍各向异性）、
+   边缘不可逆。纯径向模型各向同性（r=0.5 处 8 个方向极差 0.05px）、全幅可逆。
+   代价只是单应残余多 0.05px，值得。
+
+关于「画面四角往返误差 40px」：这不是内参坏了。`cv2.undistortPoints` 是 5 次固定点
+迭代，在归一化半径 >1.1 的极角上本来就不收敛（牛顿法解同一模型误差是 0）。
+那里也超出 `valid_radius`，所以只作提示，不会关掉去畸变。
+
+**内参自检（防"折叠模型"）**：节点和 `planar_calib.py` 都会检查
+「画面内径向单调 + 工作区正逆一致 ≤0.5px」，不通过就**拒绝启用**（`camera_model`
+报 `畸变模型不合理`，`planar_calib` 直接抛错）。因为折叠的模型会让
+`undistortPoints` 返回垃圾坐标，用它算毫米/标手眼必然是错的，而且表现是"稳定地偏"。
+
+**重标内参**（换镜头、动过对焦、或者怀疑不准时）：
 
 ```bash
-python tools/planar_calib.py --image board.jpg --dry-run                # 带去畸变
-python tools/planar_calib.py --image board.jpg --dry-run --no-undistort # 不去畸变
+# 板子上：起采集页，按提示把棋盘推到画面各处，够了会自动解算
+python3 tools/board_calib_server.py --square 24        # 浏览器开 http://<板子IP>:8080
+# 本地：判据 + 选模型（no_tangent 是本项目选定的模型）
+python tools/eval_intrinsic.py --captures <图目录> --square 24 --try-variants
+python tools/eval_intrinsic.py --captures <图目录> --square 24 \
+       --recalib-flags no_tangent --recalib-out camera_intrinsic.json
 ```
 
-比两次的「重投影残差」：**带内参那次更小** = 内参是对的，必须开；
-**反而更大** = 内参不可信（或标定样本没覆盖画面四角），这时先把内参重标，
-别硬开——开了反而更差。合成图上的对照：不去畸变 0.01mm，硬套这组内参变 4.48mm。
+`--square` 只影响棋盘位姿的平移量，不影响 fx/fy/cx/cy 和畸变系数；
+但**打印出来的格子真实边长要量一下**（这次按 24mm 算，打印版标的是 25mm，差 4%，
+对 K、D 无影响，写进 json 的 `square_mm_note` 了）。
 
 > ⚠ **一致性铁律**：`hand_eye.json` 里记了标定时到底有没有去畸变。
 > 节点启动会拿它和当前开关比对，不一致直接 `ERROR`。
-> 因为这种情况表现为"稳定地偏十几毫米"，现场极难定位。
-> 换内参/换开关之后，**必须重新标手眼**。
-
-重标内参（只有换镜头、动过对焦才需要）：
-
-```bash
-python tools/camera_intrinsic_calib.py      # 空格拍 15 张 → c 解算
-# 拍的 15 张必须覆盖画面四角，否则模型在边缘会外推失真
-```
+> **换内参 ≠ 换开关**：内参一变，像素坐标系就变了，**旧的手眼矩阵立刻作废**，必须重标。
+> 这条也适用于本次重标——之前如果已经用旧内参标过手眼，那份矩阵不能再用。
 
 ### 8.2 拍一张标定图
 
@@ -416,7 +470,7 @@ python tools/gantry_monitor.py --port COM7              # PC 上
 
 ```bash
 python tools/planar_calib.py --self-test          # 合成棋盘：检测→求解→对齐→3锚点→JSON
-python tools/test_protocol.py                     # 协议 + 标定 + 去畸变 + 安全闸，99 项
+python tools/test_protocol.py                     # 协议 + 标定 + 内参质量闸 + 安全闸，119 项
 python tools/gantry_monitor.py --simulate         # 坐标帧解析器抗噪
 python tools/collect_anchors.py --simulate        # 锚点采集流程（含坏 CRC/半包）
 python tools/hsv_calib.py --data 标定图片          # HSV 阈值标定（见第九节）

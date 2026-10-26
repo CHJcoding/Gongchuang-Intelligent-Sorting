@@ -1,0 +1,17 @@
+# 中惠 C100 相机（HJ USB 2.0 Camera, 0c45:636b）固定节点名
+#
+# 为什么要这条规则：
+#   USB 链路只要弹一下（供电不足 / 线材接触 / 静电），内核就会 disconnect +
+#   重新枚举，节点号从 /dev/video0 漂到 /dev/video1。任何写死 /dev/video0 的
+#   launch 从此永远报 "Cannot open device /dev/video0" 或 "Invalid v4l2 format"，
+#   而 UVC 相机本身是好的 —— 极容易误判成硬件坏了。
+#
+#   index==0 才是取流节点；index==1 是 UVC metadata 节点，不能用来取图。
+#
+# 安装：
+#   sudo cp 60-gc-camera.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=video4linux
+#   ls -l /dev/cam0        # 应指向 videoN（index 0 那个）
+#
+# 之后 run_det.sh / cam_watchdog.sh 一律用 /dev/cam0，不再用 /dev/videoN。
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="0c45", ATTRS{idProduct}=="636b", ATTR{index}=="0", SYMLINK+="cam0", MODE="0666"
