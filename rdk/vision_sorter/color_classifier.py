@@ -12,8 +12,13 @@ import numpy as np
 import config as C
 
 
-def _vote(hsv_roi):
-    """对每个 HSV 区间统计命中像素数。"""
+def _vote(hsv_roi, chiral_mask=None):
+    """对每个 HSV 区间统计命中像素数。
+
+    chiral_mask 不为 None 时，只统计"自身是彩色像素"的命中：
+    深色台面 / 白纸背景会被 black、white 区间吃进去，把真颜色的票数稀释掉
+    （实测绿料 conf 只有 0.60，正好压在判色下限上，会随机判失败）。
+    """
     scores = {}
     for name, (lo, hi) in C.COLOR_RANGES_HSV.items():
         m = cv2.inRange(hsv_roi, np.array(lo), np.array(hi))
@@ -22,8 +27,18 @@ def _vote(hsv_roi):
                              np.array(C.RED_HSV_LOWER2[0]),
                              np.array(C.RED_HSV_LOWER2[1]))
             m = cv2.bitwise_or(m, m2)
+        if chiral_mask is not None:
+            m = cv2.bitwise_and(m, chiral_mask)
         scores[name] = int(cv2.countNonZero(m))
     return scores
+
+
+def _chromatic_mask(hsv_roi):
+    """彩色像素掩码：S 和 V 都够高，排除深色背景与白色台面。"""
+    S = hsv_roi[:, :, 1]
+    V = hsv_roi[:, :, 2]
+    m = ((S >= C.CHROMATIC_S_MIN) & (V >= C.CHROMATIC_V_MIN))
+    return m.astype(np.uint8) * 255
 
 
 def classify_color(bgr_roi, verbose=False):
@@ -38,7 +53,15 @@ def classify_color(bgr_roi, verbose=False):
     hsv = cv2.cvtColor(bgr_roi, cv2.COLOR_BGR2HSV)
     total = float(h * w)
 
-    scores = _vote(hsv)
+    # 彩色像素占比够高 -> 只在彩色像素上投票；否则（黑/白/灰物料）退回全像素投票。
+    chiral = _chromatic_mask(hsv)
+    chiral_frac = cv2.countNonZero(chiral) / total
+    if chiral_frac >= C.CHROMATIC_MIN_FRAC:
+        scores = _vote(hsv, chiral)
+        basis = "chromatic %.0f%%" % (chiral_frac * 100)
+    else:
+        scores = _vote(hsv)
+        basis = "all pixels (chromatic only %.0f%%)" % (chiral_frac * 100)
     ordered = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     top_name, top_cnt = ordered[0]
     second_cnt = ordered[1][1] if len(ordered) > 1 else 0
@@ -49,6 +72,7 @@ def classify_color(bgr_roi, verbose=False):
 
     conf = top_cnt / (top_cnt + second_cnt + 1e-6)
     if verbose:
+        print("  basis:", basis)
         print("  votes:", {k: v for k, v in ordered[:3]})
         print("  ratio=%.3f conf=%.3f" % (top_cnt / total, conf))
     return top_name, round(conf, 3)

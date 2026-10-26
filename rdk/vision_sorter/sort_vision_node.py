@@ -34,7 +34,9 @@ from ai_msgs.msg import PerceptionTargets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C
+import comm                       # 组帧用（模拟模式要打出真实字节）
 from color_classifier import classify_color
+import grasp_refine
 import hand_eye
 import camera_model
 import safety
@@ -105,6 +107,11 @@ class SortVisionNode(Node):
                                float(getattr(C, "GRAB_TIMEOUT_S", 12.0)))
         self.declare_parameter("grab_done_mode",
                                str(getattr(C, "GRAB_DONE_MODE", "timer")))
+        # 台架自检：每秒把所有检测到的目标（含判色结果）打一行日志。
+        # 只影响日志，不影响触发；物料识别联调时开着最直观。
+        self.declare_parameter("scan_all", bool(getattr(C, "SCAN_ALL", False)))
+        # 扫描日志间隔（秒）。台架连续放料时调小到 0.3，日志才跟得上手速。
+        self.declare_parameter("scan_interval", 1.0)
         self.auto_trigger = bool(self.get_parameter("auto_trigger").value)
         self.serial_sim = bool(self.get_parameter("serial_sim").value)
         self.allow_uncalibrated = bool(
@@ -113,6 +120,9 @@ class SortVisionNode(Node):
         self.grab_timeout_s = float(self.get_parameter("grab_timeout_s").value)
         self.grab_done_mode = str(
             self.get_parameter("grab_done_mode").value).lower()
+        self.scan_all = bool(self.get_parameter("scan_all").value)
+        self.scan_interval = max(0.1, float(self.get_parameter("scan_interval").value))
+        self.last_scan_t = 0.0
         self.require_calib = bool(getattr(C, "SAFETY_REQUIRE_CALIB", True))
 
         # ---- 帧缓存（按时间戳配对，避免用到过期画面）----
@@ -135,6 +145,8 @@ class SortVisionNode(Node):
         self.stat_blocked = 0              # 被安全闸拦下的次数
         self.stat_send_fail = 0            # 串口写失败次数
         self.stat_edge = 0                 # 目标落在去畸变覆盖区外的次数
+        self.stat_refine_ok = 0            # 抓取点精修成功（用轮廓点）次数
+        self.stat_refine_fb = 0            # 精修回退到框中心的次数
         self.last_reopen_t = 0.0           # 上次尝试重连串口的时刻
 
         # ---- 发布 ----
@@ -388,10 +400,6 @@ class SortVisionNode(Node):
 
     def on_detection(self, msg):
         self.stat_det += 1
-        # 抓取窗口：机械臂/夹具会进入视野并被 YOLO 误检成物料，必须屏蔽
-        if self.blank_until and time.time() < self.blank_until:
-            self.stat_blank += 1
-            return
         targets = []
         for t in msg.targets:
             rois = getattr(t, "rois", None)
@@ -410,6 +418,15 @@ class SortVisionNode(Node):
                              int(roi.rect.x_offset + roi.rect.width),
                              int(roi.rect.y_offset + roi.rect.height)],
                 })
+        # 识别自检（台架模式）：放在屏蔽判定【之前】，抓取窗口里也照打,
+        # 否则连续放料时会有一半结果被窗口吃掉。
+        if self.scan_all and targets:
+            self._log_scan(targets, msg)
+
+        # 抓取窗口：机械臂/夹具会进入视野并被 YOLO 误检成物料，必须屏蔽
+        if self.blank_until and time.time() < self.blank_until:
+            self.stat_blank += 1
+            return
         if not targets:
             return
         self.stat_hit += 1
@@ -467,6 +484,60 @@ class SortVisionNode(Node):
         self.blank_until = now + window + getattr(C, "BLANK_AFTER_DONE_S", 0.8)
         self._publish_state("GRABBING")
 
+    def _log_scan(self, targets, det_msg):
+        """把这一帧的识别结果打出来（形状/颜色/像素/毫米），带两点稳定化：
+
+        1) 同帧去重：模型偶尔给同一个物料出两个框（相距十几像素、形状还不一样），
+           只留置信度最高的那个，否则一行里会出现两个"目标"其实是同一颗。
+        2) 时序投票：同一位置（60px 网格）最近 2 秒内的 (形状, 颜色) 取多数，
+           消掉"这一帧叫圆锥、下一帧叫圆柱"的抖动。样本不足 3 帧的点后面跟 "·"，
+           表示还没投稳，别信。
+        """
+        now = time.time()
+        if now - self.last_scan_t < self.scan_interval:
+            return
+        self.last_scan_t = now
+        frame = self._pick_frame(det_msg.header.stamp)
+
+        raw = []
+        for t in sorted(targets, key=lambda d: -d["conf"]):
+            x1, y1, x2, y2 = t["bbox"]
+            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            color, cconf = None, 0.0
+            if frame is not None:
+                H, W = frame.shape[:2]
+                roi = frame[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+                if roi.size:
+                    color, cconf = classify_color(roi)
+            if any(abs(cx - a) < 55 and abs(cy - b) < 55 for a, b, _s, _c, _k in raw):
+                continue
+            raw.append((cx, cy, t["shape"], color, cconf))
+
+        track = getattr(self, "_scan_track", None)
+        if track is None:
+            track = self._scan_track = {}
+        alive, parts = {}, []
+        for cx, cy, shape, color, cconf in raw:
+            key = (int(cx // 60), int(cy // 60))
+            hist = [h for h in track.get(key, []) if now - h[0] < 2.0]
+            hist.append((now, shape, color, cconf))
+            alive[key] = hist
+            shapes = [h[1] for h in hist]
+            colors = [h[2] for h in hist if h[2]]
+            s = max(set(shapes), key=shapes.count)
+            c = max(set(colors), key=colors.count) if colors else None
+            cx_u, cy_u = camera_model.undistort_point(cx, cy)
+            x_mm, y_mm, _ = pixel_to_robot(cx_u, cy_u)
+            level, _why = camera_model.check_point(cx, cy)
+            parts.append(
+                "%s/%s(%.2f)%s px=(%.0f,%.0f) mm=(%.1f,%.1f)%s"
+                % (C.SHAPE_NAMES_CN.get(s, s), c if c else "判色失败", cconf,
+                   "" if len(hist) >= 3 else "·", cx, cy, x_mm, y_mm,
+                   " ⚠外推" if level != "ok" else ""))
+        self._scan_track = alive
+        self.get_logger().info("[扫描] %d 个目标: %s"
+                               % (len(parts), " | ".join(parts) if parts else "无"))
+
     def _fire(self, target, det_msg):
         frame = self._pick_frame(det_msg.header.stamp)
         if frame is None:
@@ -493,7 +564,28 @@ class SortVisionNode(Node):
             self._publish_state("COLOR_FAIL")
             return
 
-        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        # ---- 抓取点：不用框中心 ----
+        # YOLO 的框天生比物料大一圈（回归 + 阴影 + stride 8 网格），框中心跟着偏；
+        # 物料是单色塑料件，颜色轮廓比模型回归准得多，所以改成在框内做颜色分割，
+        # 用轮廓质心（或最小外接矩形中心）当抓取点。1px≈0.27mm，偏 8px 就是 2mm。
+        box_cx, box_cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        gp = None
+        if getattr(C, "GRASP_REFINE", True):
+            gp = grasp_refine.refine(frame, target["bbox"], color)
+        if gp is not None and gp["ok"]:
+            cx, cy = gp["point"]
+            self.stat_refine_ok += 1
+            self.get_logger().info(
+                "抓取点%s 框中心=(%.1f,%.1f) 偏移=%.1fpx"
+                % (grasp_refine.describe(gp), box_cx, box_cy,
+                   ((cx - box_cx) ** 2 + (cy - box_cy) ** 2) ** 0.5),
+                throttle_duration_sec=1.0)
+        else:
+            cx, cy = box_cx, box_cy
+            if gp is not None:
+                self.stat_refine_fb += 1
+                self.get_logger().warn("抓取点%s" % grasp_refine.describe(gp),
+                                       throttle_duration_sec=5.0)
         # 广角畸变修正：必须做在"像素->毫米"之前。手眼矩阵是仿射的，
         # 吸收不了非线性畸变（C100 实测 r=0.64 处已修正 14px ≈ 2mm，越往外越大）。
         # planar_calib 标定时也是先去畸变再检角点，两边口径一致。
@@ -564,7 +656,16 @@ class SortVisionNode(Node):
             "conf": round(target["conf"], 3),
             "color_conf": color_conf,
             "bbox": target["bbox"],
+            "pixel_box": [round(box_cx, 1), round(box_cy, 1)],
             "pixel": [round(cx, 1), round(cy, 1)],
+            "grasp": None if gp is None else {
+                "ok": gp["ok"], "mode": gp["mode"],
+                "tight_bbox": gp["tight_bbox"],
+                "fill": round(gp["fill"], 3),
+                "angle": None if gp["angle"] is None else round(gp["angle"], 1),
+                "radius": None if gp["radius"] is None else round(gp["radius"], 1),
+                "reason": gp["reason"],
+            },
             "pixel_undist": [round(cx_u, 1), round(cy_u, 1)],
             "undistort": camera_model.is_active(),
             "robot_mm": [x_mm, y_mm, z_mm],
@@ -586,13 +687,32 @@ class SortVisionNode(Node):
         if self.serial_worker is not None and self.serial_ok:
             self.serial_worker.submit(target["shape"], color, x_mm, y_mm)
         else:
-            self.get_logger().info(
-                "[SIM] 下发 %s/%s (%d,%d)（模拟抓取 %.1fs）" %
-                (target["shape"], color, round(x_mm), round(y_mm),
-                 self.grab_cycle_s))
+            self._log_dry_frame(target["shape"], color, x_mm, y_mm,
+                                self.grab_cycle_s)
 
         self._publish_state("SENT" if (self.serial_worker and self.serial_ok)
                             else "SIM_SENT")
+
+    def _log_dry_frame(self, shape, color, x_mm, y_mm, cycle_s):
+        """模拟模式：把"本来要发给 STM32 的那 10 个字节"原样打出来。
+
+        只打印毫米值没用 —— STM32 侧最容易错的是帧结构（帧头/编号表/字节序/CRC），
+        这些从 mm 值上看不出来。这里直接给 hex，可以逐字节对固件。
+        """
+        try:
+            b = comm.build_frame(shape, color, x_mm, y_mm)
+        except Exception as e:                        # noqa: BLE001
+            self.get_logger().error(
+                "[SIM] 组帧失败: %s: %s" % (type(e).__name__, e))
+            return
+        hexs = " ".join("%02X" % v for v in bytearray(b))
+        shape_id = comm.SHAPE_ID.get(shape, 255)
+        color_id = comm.COLOR_ID.get(color, 255)
+        self.get_logger().info(
+            "[SIM] 应发 STM32: %s  (%d 字节) | shape=%s(%d) color=%s(%d) "
+            "x=%d y=%d crc=0x%02X tail=0x%02X | 模拟抓取 %.1fs"
+            % (hexs, len(b), shape, shape_id, color, color_id,
+               int(round(x_mm)), int(round(y_mm)), b[8], b[9], cycle_s))
 
     # ---------------- 标定热加载 ----------------
     def on_reload_calib(self, request, response):
@@ -628,10 +748,12 @@ class SortVisionNode(Node):
         self._try_reopen_serial()
         self.get_logger().info(
             "统计: 检测消息=%d 含目标=%d 下发=%d 屏蔽=%d 颜色失败=%d "
-            "安全闸拦截=%d 串口失败=%d 边缘外推=%d 帧缓存=%d busy=%s 串口=%s"
+            "安全闸拦截=%d 串口失败=%d 边缘外推=%d 抓取点精修=%d/%d 帧缓存=%d "
+            "busy=%s 串口=%s"
             % (self.stat_det, self.stat_hit, self.stat_fire, self.stat_blank,
                self.stat_color_fail, self.stat_blocked, self.stat_send_fail,
-               self.stat_edge, len(self.frames), self.busy,
+               self.stat_edge, self.stat_refine_ok, self.stat_refine_fb,
+               len(self.frames), self.busy,
                "模拟" if self.serial_sim else
                ("正常" if self.serial_ok else "故障")))
 

@@ -582,6 +582,32 @@ python3 sort_vision_node.py --ros-args -p grab_cycle_s:=4.5 -p grab_timeout_s:=1
 | `grab_timeout_s` | 12.0 | byte 模式的兜底超时 |
 | `grab_done_mode` | timer | 改 `byte` 就走 STM32 的 `0x06` 完成字节 |
 
+### 10.5 抓取点贴合：用轮廓质心，不用框中心
+
+YOLO 的框天生比实物大一圈（回归误差 + 阴影 + stride 8 网格取整），框中心跟着偏，
+而 **1px ≈ 0.27mm**，偏 8px 就是 2mm。物料是单色塑料件，颜色边界能到亚像素，比模型回归准，
+所以默认在框内做颜色分割，用**轮廓质心**当抓取点：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `grasp_refine` | True | 关掉退回旧的框中心 |
+| `grasp_point_mode` | centroid | `centroid` 质心 / `rect` 最小外接矩形中心（长条料更稳，还给出长宽和角度）/ `bbox` 旧行为 |
+| `grasp_min_fill` | 0.10 | 框内着色像素占比下限，低于它说明颜色分割不可信 → 回退框中心 |
+| `grasp_min_px` | 60 | 着色像素太少（太远/糊）不精修 |
+| `grasp_margin` | 8 | 框外扩多少像素找轮廓（补 YOLO 框偏小的情况） |
+
+```bash
+# 临时对比：老行为 vs 新行为，同一盘料各跑一轮
+ros2 run ... 或  python3 sort_vision_node.py --ros-args -p grasp_point_mode:=bbox
+```
+
+**怎么看效果**
+- 统计行 `抓取点精修=成功/回退`（回退=颜色分割不可信，用了框中心）
+- 日志 `抓取点[精修/质心] 框中心=(x,y) 偏移=Npx`：偏移常年 <1px 说明框本来就准；
+  稳定偏 3~10px 就是模型框真的偏，此时质心更贴。
+- 出现 `回退(颜色不符)` → 颜色判错，或框里混进了别的颜色料/反光。
+- 精修点仍是**像素**，之后才走去畸变 → 单应 → mm，口径没变。
+
 ## 十一、还没闭环的事
 
 - [ ] 手眼标定（棋盘格铺平 → `planar_calib.py` → 3 锚点或 `--probe`，验收平均 ≤5mm、最大 ≤8mm）
@@ -598,4 +624,6 @@ python3 sort_vision_node.py --ros-args -p grab_cycle_s:=4.5 -p grab_timeout_s:=1
 - [x] `/sort/reload_calib` 标定热加载服务
 - [x] 节拍参数命令行覆盖（`grab_cycle_s` / `grab_timeout_s` / `grab_done_mode`）
 - [x] HSV 阈值标定工具（`tools/hsv_calib.py`，照片 → 分位数 → 建议阈值 + 冲突检查）
+- [x] 抓取点改用颜色轮廓质心（`grasp_refine.py`，框中心偏移可观测，可一键退回）
+- [ ] 实机对比 `grasp_point_mode=bbox` 与 `centroid` 各抓 5 次，确认质心更准
 - [ ] 各颜色实物拍照片跑 `hsv_calib.py`，替换 `COLOR_RANGES_HSV`（等物料打印）

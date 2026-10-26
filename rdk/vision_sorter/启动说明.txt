@@ -1,0 +1,73 @@
+==========================================================
+ 物料识别 启动说明（台架用）   2026-10-26
+==========================================================
+
+一、pipeline 到底怎么跑的（4 步）
+
+  [1] 相机取流           hobot_usb_cam   ->  /image            (640x480 JPEG, 30fps)
+  [2] YOLOv5 检测        dnn_node_example -> /hobot_dnn_detection
+                         输出：框(rect) + 类别(YZ/YZHU/SLZ/SMT/WLZ/BQ/LK) + conf
+  [3] 裁框 + HSV 投票    sort_vision_node：拿 [2] 的框去 [1] 的图上裁 ROI，
+                         框内逐色 inRange 计票（只在彩色像素上投票），最高票者胜
+  [4] 下发 STM32        AA 55 | shape | color | x(int16 LE) | y(int16 LE) | crc8 | 0D
+
+  注意：是【先检测、后判色】。[2] 是模型给的形状，[3] 才是颜色。
+
+二、启动（板端，两条命令，各开一个 screen）
+
+  bash /root/vision_ws/stop_all.sh                  # 先清场，保证 /dev/video0 没被占
+  screen -dmS det  /root/vision_ws/cam_watchdog.sh  # [1][2] 检测链路，带自动守护
+  sleep 10                                          # 等它出 30fps
+
+  screen -dmS sort /root/vision_ws/run_fast.sh      # [3][4] 业务节点（台架快速模式）
+  screen -dmS sort /root/vision_ws/run_sort.sh      # 现场模式（6s 节拍、扫描 1s）
+
+三、看日志（只盯这一个文件就够）
+
+  tail -f /root/vision_ws/sort.log
+  [扫描] 2 个目标: 正四面体/green(0.94) px=(312,177) mm=(-12.7,403.2) | 三棱柱/red(0.96) px=(430,300) ...
+         ^形状 ^颜色 ^判色置信度 ^像素中心                    ^毫米坐标（手眼未标定=假值）
+       带 "·" = 时序投票还没投稳（< 3 帧），别信
+       带 "⚠外推" = 该点在去畸变有效半径之外，毫米不可信
+
+  [SIM] 应发 STM32: AA 55 03 03 F5 FF 8F 01 9A 0D   每 1s 打一帧，无 STM32 也能看
+  统计: 检测消息=155 含目标=78 下发=0 颜色失败=0 安全闸拦截=3 串口=故障
+
+四、现在为什么"下发=0"
+  1) 手眼未标定 -> 安全闸拦截（allow_uncalibrated=false 时一律不发）
+  2) 串口=故障 -> 板端没有 /dev/ttyS*，没接 STM32
+  这两条都是保护，不是 bug。
+
+五、参数怎么改（都在 run_fast.sh 里）
+
+  -p scan_all:=true        打印所有目标的扫描行（关掉只看下发的那个）
+  -p scan_interval:=0.3    扫描行间隔秒，台架 0.3 / 现场 1.0
+  -p grab_cycle_s:=1.0     抓取节拍秒，台架 1.0 / 现场按实测
+  -p auto_trigger:=false   关掉自动触发（只识别不下发）
+  -p allow_uncalibrated:=true  手眼没标也强行发（调试用，坐标是假的）
+
+  改完重启业务节点：screen -S sort -X quit; pkill -f sort_vision_node; 再起
+
+六、停止
+
+  bash /root/vision_ws/stop_all.sh      # 全停，并报告 /dev/video0、8000 端口残留
+
+七、常出错的地方
+
+  1) hobot_usb_cam: Cannot open device /dev/video0
+     -> 另一个进程占着相机。先跑 stop_all.sh，再起。检测链路只能起【一份】。
+  2) 检测停了但 screen 还在
+     -> ROS2 launch 不会自愈。用 cam_watchdog.sh 起，它每 18s 检查日志有没有新帧，
+        死了自动重启。
+  3) 判色失败
+     -> 看 [扫描] 行里那个物料"px="位置，看框内色相；或者把 ROI 裁出来存图：
+        颜色区间在 /root/vision_ws/vision_sorter/config.py 的 COLOR_RANGES_HSV
+        7 号 = 粉色（2026-10-26 新增），编号与 STM32 一致：
+        red0 orange1 yellow2 green3 cyan4 blue5 purple6 pink7 black8 white9
+  4) 同一个物料出现两个目标
+     -> 模型出了两个重叠框，已按 55px 去重；仍出现说明两框相距 >55px，把去重
+        半径调大或调高 YOLO 置信度门槛（config.YOLO_CONF_THRES = 0.8）
+
+八、预览画面
+
+  http://10.161.15.50:8000      （由检测链路自带，stop_all 会把它一起关掉）

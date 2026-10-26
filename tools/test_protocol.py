@@ -69,7 +69,15 @@ def test_downlink():
     check("green=3", comm.COLOR_ID["green"] == 3)
     check("black=8（未前移）", comm.COLOR_ID["black"] == 8)
     check("white=9（未前移）", comm.COLOR_ID["white"] == 9)
-    check("7 号预留（无人占用）", 7 not in comm.COLOR_ID.values())
+    check("pink=7（2026-10-26 启用）", comm.COLOR_ID["pink"] == 7)
+    check("颜色编号全表无重复",
+          len(set(comm.COLOR_ID.values())) == len(comm.COLOR_ID),
+          str(comm.COLOR_ID))
+    check("颜色编号与 config.COLOR_IDS 完全一致",
+          comm.COLOR_ID == C.COLOR_IDS, str(comm.COLOR_ID))
+    check("每个 HSV 区间都有编号（不许漏配）",
+          set(C.COLOR_RANGES_HSV) <= set(C.COLOR_IDS),
+          str(set(C.COLOR_RANGES_HSV) - set(C.COLOR_IDS)))
     check("magenta 已删除", "magenta" not in comm.COLOR_ID
           and "magenta" not in C.COLOR_RANGES_HSV)
     check("未知颜色 -> 255",
@@ -618,6 +626,134 @@ def test_hsv_calib():
               snippet.rstrip().endswith("}"))
 
 
+def test_grasp_refine():
+    """抓取点精修：用合成图验证"轮廓质心 vs 框中心"的贴合精度。"""
+    if cv2 is None:
+        print("skip (no cv2)")
+        return
+    import grasp_refine as GR
+
+    def hsv_bgr(h, s, v):
+        return tuple(int(c) for c in cv2.cvtColor(
+            np.uint8([[[h, s, v]]]), cv2.COLOR_HSV2BGR)[0, 0])
+
+    GREEN = hsv_bgr(60, 200, 200)
+    BLUE = hsv_bgr(110, 200, 200)
+    WHITE = (255, 255, 255)
+
+    def blank():
+        return np.zeros((200, 200, 3), np.uint8)
+
+    # --- 1. 实心圆：质心/贴合框/填充率 ---
+    img = blank()
+    cv2.circle(img, (100, 101), 20, GREEN, -1)
+    r = GR.refine(img, [72, 73, 128, 129], "green")
+    check("精修：圆成功", r["ok"], r["reason"])
+    err = ((r["point"][0] - 100) ** 2 + (r["point"][1] - 101) ** 2) ** 0.5
+    check("精修：圆质心误差<0.7px", err < 0.7, "err=%.2f" % err)
+    tb = r["tight_bbox"]
+    check("精修：贴合框≈真实外接框(±2px)",
+          abs(tb[0] - 80) <= 2 and abs(tb[1] - 81) <= 2 and
+          abs(tb[2] - 120) <= 2 and abs(tb[3] - 121) <= 2, str(tb))
+    check("精修：圆填充率≈πr²/框面积",
+          abs(r["fill"] - 3.1416 * 400 / (56 * 56)) < 0.06,
+          "fill=%.3f" % r["fill"])
+    check("精修：等效半径≈20px", abs(r["radius"] - 20) <= 2, "r=%.1f" % r["radius"])
+
+    # --- 2. 框故意偏心：框中心偏 6px，精修要拉回真值 ---
+    img = blank()
+    cv2.circle(img, (100, 101), 20, GREEN, -1)
+    r2 = GR.refine(img, [60, 73, 128, 129], "green")
+    box_cx = (60 + 128) / 2.0
+    e_box = abs(box_cx - 100)
+    e_ref = abs(r2["point"][0] - 100)
+    check("精修：偏心框下框中心本来偏 6px", abs(e_box - 6) < 0.01, "%.1f" % e_box)
+    check("精修：把偏心纠回真值(误差<1px)", e_ref < 1.0, "e=%.2f" % e_ref)
+
+    # --- 3. 高光孔洞不能把质心拉走 ---
+    img = blank()
+    cv2.circle(img, (100, 101), 20, GREEN, -1)
+    cv2.circle(img, (94, 96), 4, WHITE, -1)      # 高光
+    r3 = GR.refine(img, [72, 73, 128, 129], "green")
+    err3 = ((r3["point"][0] - 100) ** 2 + (r3["point"][1] - 101) ** 2) ** 0.5
+    check("精修：高光孔洞下质心误差<1px", err3 < 1.0, "err=%.2f" % err3)
+
+    # --- 4. 框内另一个小同色噪点：只能取最大轮廓 ---
+    img = blank()
+    cv2.circle(img, (100, 101), 20, GREEN, -1)
+    cv2.rectangle(img, (74, 74), (80, 80), GREEN, -1)     # 角落噪点
+    r4 = GR.refine(img, [72, 73, 128, 129], "green")
+    err4 = ((r4["point"][0] - 100) ** 2 + (r4["point"][1] - 101) ** 2) ** 0.5
+    check("精修：忽略框内小噪点", err4 < 1.0, "err=%.2f" % err4)
+
+    # --- 5. 颜色对不上 -> 回退框中心 ---
+    img = blank()
+    cv2.circle(img, (100, 101), 20, BLUE, -1)
+    r5 = GR.refine(img, [72, 73, 128, 129], "green")
+    check("精修：颜色不符时标记失败", not r5["ok"], r5["reason"])
+    check("精修：失败时退回框中心",
+          abs(r5["point"][0] - 100) < 0.01 and abs(r5["point"][1] - 101) < 0.01,
+          str(r5["point"]))
+
+    # --- 6. 太小 -> 回退 ---
+    img = blank()
+    cv2.circle(img, (100, 101), 2, GREEN, -1)
+    r6 = GR.refine(img, [72, 73, 128, 129], "green")
+    check("精修：物体太小按回退处理", not r6["ok"], r6["reason"])
+
+    # --- 7. 框贴边/越界不崩 ---
+    img = blank()
+    cv2.circle(img, (8, 8), 6, GREEN, -1)
+    r7 = GR.refine(img, [-6, -6, 22, 22], "green")
+    check("精修：越界框不崩且仍有有效点",
+          isinstance(r7["point"], tuple) and len(r7["point"]) == 2, str(r7["point"]))
+
+    # --- 8. 红色跨 0°：两段区间都要命中 ---
+    img = blank()
+    cv2.rectangle(img, (20, 20), (60, 60), hsv_bgr(5, 200, 200), -1)
+    cv2.rectangle(img, (120, 120), (160, 160), hsv_bgr(175, 200, 200), -1)
+    m = GR.color_mask(cv2.cvtColor(img, cv2.COLOR_BGR2HSV), "red")
+    check("精修：红色跨 0° 两段都能分割",
+          int(np.count_nonzero(m[20:61, 20:61])) > 1000 and
+          int(np.count_nonzero(m[120:161, 120:161])) > 1000,
+          "first=%d second=%d" % (
+              int(np.count_nonzero(m[20:61, 20:61])),
+              int(np.count_nonzero(m[120:161, 120:161]))))
+
+    # --- 9. rect 模式取最小外接矩形中心 ---
+    img = blank()
+    cv2.rectangle(img, (70, 90), (130, 112), GREEN, -1)   # 60x22 横条
+    r9 = GR.refine(img, [64, 84, 136, 118], "green", point_mode="rect")
+    check("精修：rect 模式中心≈(100,101)",
+          abs(r9["point"][0] - 100) < 1.0 and abs(r9["point"][1] - 101) < 1.0,
+          str(r9["point"]))
+    check("精修：rect 模式尺寸≈60x22",
+          abs(r9["rect_size"][0] - 60) <= 2 and abs(r9["rect_size"][1] - 22) <= 2,
+          str(r9["rect_size"]))
+
+    # --- 10. bbox 模式等价于不精修 ---
+    img = blank()
+    cv2.circle(img, (100, 101), 20, GREEN, -1)
+    r10 = GR.refine(img, [60, 73, 128, 129], "green", point_mode="bbox")
+    check("精修：bbox 模式返回框中心",
+          r10["point"] == ((60 + 128) / 2.0, (73 + 129) / 2.0), str(r10["point"]))
+
+    # --- 11. describe 两种分支都不抛异常 ---
+    ok_desc = GR.describe(r)
+    fb_desc = GR.describe(r5)
+    check("精修：describe 成功/回退都能出字符串",
+          isinstance(ok_desc, str) and "精修[" in ok_desc and
+          isinstance(fb_desc, str) and "回退" in fb_desc,
+          ok_desc + " | " + fb_desc)
+
+    # --- 12. 关掉精修时 config 开关存在且为真 ---
+    check("精修：config.GRASP_REFINE 存在",
+          hasattr(C, "GRASP_REFINE"), "缺 GRASP_REFINE")
+    check("精修：默认模式是 centroid",
+          getattr(C, "GRASP_POINT_MODE", "") == "centroid",
+          getattr(C, "GRASP_POINT_MODE", ""))
+
+
 def main():
     print("=" * 70)
     print("离线单测：协议 + 标定链路")
@@ -625,7 +761,7 @@ def main():
     for fn in (test_downlink, test_pos_frame, test_done_paths,
                test_hand_eye, test_math, test_aligned_residual,
                test_camera_model, test_intrinsic_quality,
-               test_safety, test_hsv_calib):
+               test_safety, test_hsv_calib, test_grasp_refine):
         print("\n--- %s ---" % fn.__name__)
         try:
             fn()
