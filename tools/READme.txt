@@ -15,7 +15,7 @@
 │   │                           #   --anchors-file 用采到的锚点自动解旋转+手性
 │   │                           #   --probe 实抓偏差补偿；--no-undistort 做内参 A/B 对比
 │   │                           #   读内参时先自检，折叠的内参直接拒跑
-│   ├── collect_anchors.py      # ★ 采标定锚点：读 STM32 回传坐标，回车记录（--simulate 离线测）
+│   ├── collect_anchors.py      # ★ 采标定锚点：读 STM32 回传坐标；回车记录 / --auto 停顿自动采 / --replay 离线回放
 │   ├── gantry_monitor.py       # ★ 读 STM32 回传的 0x07 坐标帧（--simulate 可离线测）
 │   ├── hsv_calib.py            # ★ HSV 阈值标定：每种颜色一叠照片 -> 分位数/建议区间/冲突检查
 │   │                           #   --apply 只打印 config 片段；--report x.md 出完整报告

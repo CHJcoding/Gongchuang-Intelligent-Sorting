@@ -403,9 +403,13 @@ Y 反向 → `--mirror y`；两轴同时反（180°）→ `--rot 180`。
 `planar_calib` 会直接解出 **比例 + 旋转 + 平移 + 手性**：
 
 ```bash
-# ① 采锚点（板子上，串口独占，先停掉 sort_vision_node）
+# ① 采锚点（板子上，串口独占，先跑 stop_all.sh 停掉 sort_vision_node）
 python3 tools/collect_anchors.py --port /dev/ttyUSB0 --corners 0 8 53 \
         --image /root/board.jpg --out /root/vision_ws/anchors.json
+
+# ①' 更省事：停顿自动采（电机停住就自动记，运动中/缓慢漂移的位姿直接丢弃）
+python3 tools/collect_anchors.py --auto --port /dev/ttyUSB0 --corners 0 8 53 \
+        --image /root/board.jpg --pose-log /root/vision_ws/poses.jsonl
 
 # ② 解算（自动读锚点文件）
 python3 tools/planar_calib.py --image /root/board.jpg \
@@ -414,6 +418,26 @@ python3 tools/planar_calib.py --image /root/board.jpg \
 
 采的时候把夹爪尖依次降到该角点**正上方并贴住桌面**，每次按回车；
 工具自动读 STM32 的 `0x07` 坐标（多帧取中位数），不用手抄。
+
+`--auto` 不用按回车：位置在 **0.6mm 内静止 1.5 秒**（20 帧左右）就自动记一个锚点，
+判定参数都能调（现场抖动大就放宽）：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--hold-s` | 1.5 | 静止多久才算一个可用位姿 |
+| `--tol-mm` | 0.6 | 静止判定的位置容差，抖得厉害就放宽到 1.5 |
+| `--min-samples` | 8 | 一个停顿窗口最少几帧 |
+| `--min-move-mm` | 15 | 两次锚点之间至少要挪开多少，防止同一位置被记两次 |
+
+`--auto` 模式下命令行还能敲：`u` 撤销上一个锚点（重新采）、`q` 提前结束。
+锚点是**边采边写**的（每采一个就落盘一次），中途崩了不会丢已采的。
+
+现场没接电机也能先验证：把坐标记录录成 CSV（每行 `t,x,y`）或 `--pose-log` 的 JSONL，
+用 `--replay poses.csv` 离线回放，看停顿检测挑出哪些位姿：
+
+```bash
+python3 tools/collect_anchors.py --replay poses.csv --corners 0 8 53 --tol-mm 1.5
+```
 
 角点序号看 `planar_calib` 打印的抽样表。**要选分散的点**（如 0 / 8 / 53）：
 三点共线解不出旋转，工具会警告。
@@ -456,7 +480,7 @@ RDK 侧**全部已实现并测过**，只等固件发 `0x07` 帧：
 | `comm.py` 解析 6 字节坐标帧、与 `0x06` 混流 | ✅ 已完成（`_pump` 统一解析泵） |
 | 节点消费坐标 + 发布 `/gantry/pos`（JSON） | ✅ 已完成（`POS_ENABLE=True` 时） |
 | `tools/gantry_monitor.py` 实时看坐标 / 存 CSV | ✅ 已完成 |
-| `tools/collect_anchors.py` 采锚点（回车记录，多帧中位数） | ✅ 已完成 |
+| `tools/collect_anchors.py` 采锚点（回车 / `--auto` 停顿自动采，多帧中位数） | ✅ 已完成 |
 | STM32 固件发 `0x07` | ⬜ 等固件（协议见 `rdk/协议说明_串口帧.md`） |
 
 固件好了之后只需要改两个开关：
@@ -480,9 +504,9 @@ python tools/gantry_monitor.py --port COM7              # PC 上
 
 ```bash
 python tools/planar_calib.py --self-test          # 合成棋盘：检测→求解→对齐→3锚点→JSON
-python tools/test_protocol.py                     # 协议 + 标定 + 内参质量闸 + 安全闸 + 抓取点精修，160 项
+python tools/test_protocol.py                     # 协议 + 标定 + 内参质量闸 + 安全闸 + 抓取点精修 + 停顿取位姿，190 项
 python tools/gantry_monitor.py --simulate         # 坐标帧解析器抗噪
-python tools/collect_anchors.py --simulate        # 锚点采集流程（含坏 CRC/半包）
+python tools/collect_anchors.py --simulate        # 锚点采集流程（含坏 CRC/半包 + 停顿检测）
 python tools/hsv_calib.py --data 标定图片          # HSV 阈值标定（见第九节）
 ```
 

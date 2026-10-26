@@ -1,0 +1,5 @@
+bash /root/vision_ws/stop_all.sh                  # 先清场，保证 /dev/video0 没被占
+screen -dmS det  /root/vision_ws/cam_watchdog.sh  # [1][2] 检测链路，死了自动重启
+# 等 10 秒，看到 30fps 再起业务节点：
+screen -dmS sort /root/vision_ws/run_fast.sh      # [3][4] 台架快速模式（扫描 0.3s、节拍 1s）
+# 现场用这条：screen -dmS sort /root/vision_ws/run_sort.sh   （扫描 1s、节拍 6s）

@@ -38,6 +38,7 @@ import hand_eye              # noqa: E402
 import camera_model          # noqa: E402
 import planar_calib          # noqa: E402
 import safety                # noqa: E402
+import collect_anchors       # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -874,6 +875,164 @@ def test_grasp_refine():
           "%s %s" % (r19.get("method"), r19["reason"]))
 
 
+# ====================== 停顿位姿采集（手眼标定的自动取位姿） ======================
+def test_hold_detector():
+    CA = collect_anchors
+    dt, rate = 0.05, 20.0
+
+    # --- 1. 静止段能采到一个位姿，坐标取窗口中位数 ---
+    hd = CA.HoldDetector(tol_mm=0.6, hold_s=1.0, min_samples=8, min_move_mm=15.0)
+    ev = None
+    for i in range(int(1.6 * rate)):
+        ev = hd.feed(i * dt, 20.0 + (0.2 if i % 2 else -0.2), 30.0) or ev
+    check("停顿：静止 1.6s 能采到 1 个位姿", ev is not None)
+    if ev:
+        # 交替 ±0.2 的抖动下中位数会落在某一侧（21 帧 -> 11 个 -0.2），偏 0.2mm 是正常
+        # 的，只要远小于容差 tol_mm=0.6 就不影响锚点精度。
+        check("停顿：坐标取中位数（±0.2 抖动下偏差 <=0.25mm）",
+              abs(ev["x"] - 20.0) <= 0.25 and ev["n"] >= 8,
+              "(x=%s n=%s)" % (ev.get("x"), ev.get("n")))
+
+    # --- 2. 连续运动不采 ---
+    hd = CA.HoldDetector(tol_mm=0.6, hold_s=1.0, min_samples=8, min_move_mm=15.0)
+    got = [hd.feed(i * dt, 10.0 + i * 1.0, 10.0) for i in range(80)]   # 20mm/s
+    check("停顿：匀速运动不产生位姿", not any(got))
+
+    # --- 3. 缓慢漂移（0.5mm/帧 = 10mm/s）不误判 ---
+    hd = CA.HoldDetector(tol_mm=0.6, hold_s=1.0, min_samples=8, min_move_mm=0.0)
+    got = [hd.feed(i * dt, 100.0 + i * 0.5, 50.0) for i in range(120)]
+    check("停顿：缓慢漂移不误判为静止", not any(got))
+
+    # --- 4. 原地不动只记录一次 ---
+    hd = CA.HoldDetector(tol_mm=0.6, hold_s=1.0, min_samples=8, min_move_mm=15.0)
+    cnt = 0
+    for i in range(int(8 * rate)):
+        cnt += 1 if hd.feed(i * dt, 20.0, 30.0) else 0
+    check("停顿：同一位置只记录一次", cnt == 1, "记录了 %d 次" % cnt)
+
+    # --- 5. 挪开的距离不到 min_move 也算同一位置 ---
+    hd = CA.HoldDetector(tol_mm=0.6, hold_s=0.5, min_samples=5, min_move_mm=15.0)
+    t = 0.0
+    evs = []
+    for x in (0.0, 5.0, 10.0):                 # 每次只挪 5mm < 15mm
+        for i in range(int(0.8 * rate)):
+            e = hd.feed(t, x, 0.0)
+            t += dt
+            if e:
+                evs.append(e)
+    check("停顿：挪动<min_move 当成同一位置（只采 1 个）", len(evs) == 1,
+          "采到 %d 个" % len(evs))
+
+    # --- 6. 挪开够远 -> 能采第二个 ---
+    hd = CA.HoldDetector(tol_mm=0.6, hold_s=0.5, min_samples=5, min_move_mm=15.0)
+    t, evs = 0.0, []
+    for x in (0.0, 100.0):
+        for i in range(int(0.8 * rate)):
+            e = hd.feed(t, x, 0.0)
+            t += dt
+            if e:
+                evs.append(e)
+    check("停顿：挪开够远就记新位姿", len(evs) == 2 and abs(evs[1]["x"] - 100.0) < 0.05,
+          "采到 %d 个" % len(evs))
+
+    # --- 7. 断流（>max_gap_s）必须作废旧窗口 ---
+    hd = CA.HoldDetector(tol_mm=0.6, hold_s=1.0, min_samples=8,
+                         min_move_mm=15.0, max_gap_s=1.0)
+    for i in range(int(1.2 * rate)):           # 在 (0,0) 静止
+        hd.feed(i * dt, 0.0, 0.0)
+    ev = None
+    t0 = 10.0                                  # 断了 9.4 秒
+    for i in range(int(1.6 * rate)):
+        ev = hd.feed(t0 + i * dt, 200.0, 0.0) or ev
+    check("停顿：断流后窗口重开（不会把两个位置拼一起）",
+          ev is not None and abs(ev["x"] - 200.0) < 0.05 and hd.gaps >= 1,
+          "(ev=%s gaps=%s)" % (ev, getattr(hd, "gaps", None)))
+
+    # --- 8. 撤销后同一位置可以重新采（set_accepted 同步内部状态）---
+    hd = CA.HoldDetector(tol_mm=0.6, hold_s=0.5, min_samples=5, min_move_mm=15.0)
+    t = 0.0
+    first = None
+    for i in range(int(0.8 * rate)):
+        first = hd.feed(t, 50.0, 50.0) or first
+        t += dt
+    hd.set_accepted([])                        # 模拟 u 撤销
+    again = None
+    for i in range(int(0.8 * rate)):
+        again = hd.feed(t, 50.0, 50.0) or again
+        t += dt
+    check("停顿：撤销后能重新采同一位置",
+          first is not None and again is not None,
+          "(first=%s again=%s)" % (first is not None, again is not None))
+
+    # --- 9. --replay 回放 CSV：检出的位姿能写成 anchors.json ---
+    tmp = tempfile.mkdtemp(prefix="hold_")
+    csv_path = os.path.join(tmp, "poses.csv")
+    poses = [(12.0, 410.0), (320.0, 180.0), (560.0, 70.0)]
+    lines = ["# t,x,y"]
+    t = 0.0
+    for k, (x, y) in enumerate(poses):
+        for i in range(int(2.0 * rate)):       # 每个位置停 2 秒
+            lines.append("%.3f,%.3f,%.3f" % (t, x + (0.1 if i % 2 else -0.1), y))
+            t += dt
+        if k < len(poses) - 1:                 # 走 1.2 秒
+            nx, ny = poses[k + 1]
+            n = int(1.2 * rate)
+            for i in range(n):
+                lines.append("%.3f,%.3f,%.3f"
+                             % (t, x + (nx - x) * i / (n - 1),
+                                y + (ny - y) * i / (n - 1)))
+                t += dt
+    with open(csv_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    out_path = os.path.join(tmp, "anchors.json")
+    rc = CA.main(["--replay", csv_path, "--out", out_path,
+                  "--corners", "0", "8", "53"])
+    check("停顿：--replay 正常退出", rc == 0, "rc=%s" % rc)
+    back = None
+    if os.path.isfile(out_path):
+        with open(out_path, "r", encoding="utf-8") as f:
+            back = json.load(f)
+    check("停顿：回放写出 3 个锚点且角点序号正确",
+          back is not None and [a["idx"] for a in back["anchors"]] == [0, 8, 53],
+          str(back and back.get("anchors")))
+    if back:
+        errs = [abs(back["anchors"][i]["x"] - poses[i][0]) +
+                abs(back["anchors"][i]["y"] - poses[i][1]) for i in range(3)]
+        check("停顿：回放坐标误差 <0.2mm", max(errs) < 0.2, "max=%.3f" % max(errs))
+        idxs, xys, _meta = planar_calib.load_anchors_file(out_path)
+        check("停顿：planar_calib 能读回放产物",
+              idxs == [0, 8, 53] and abs(xys[1][0] - poses[1][0]) < 0.2)
+
+    # --- 10. 回放也吃 JSONL（现场用 --pose-log 记的格式）---
+    jl = os.path.join(tmp, "poses.jsonl")
+    with open(jl, "w", encoding="utf-8") as f:
+        t = 0.0
+        for (x, y) in poses:
+            for i in range(int(2.0 * rate)):
+                f.write(json.dumps({"t": round(t, 3), "x": x, "y": y}) + "\n")
+                t += dt
+            for i in range(int(1.2 * rate)):
+                f.write(json.dumps({"t": round(t, 3), "x": x, "y": y}) + "\n")
+                t += dt
+    rc2 = CA.main(["--replay", jl, "--out", os.path.join(tmp, "a2.json"),
+                   "--corners", "0", "8", "53"])
+    check("停顿：--replay 支持 JSONL", rc2 == 0)
+
+    # --- 11. 空/坏回放文件要报错而不是崩 ---
+    bad = os.path.join(tmp, "bad.csv")
+    with open(bad, "w", encoding="utf-8") as f:
+        f.write("这不是坐标\n")
+    rc3 = CA.main(["--replay", bad])
+    check("停顿：坏回放文件返回失败码", rc3 == 1, "rc=%s" % rc3)
+
+    # --- 12. 默认参数（现场最容易踩的数值）---
+    hd = CA.HoldDetector()
+    check("停顿：默认参数在合理范围（hold 1.5s / 容差 0.6mm / 挪开 15mm）",
+          abs(hd.hold_s - 1.5) < 1e-9 and hd.tol_mm <= 1.0 and hd.min_move_mm >= 5.0,
+          "(hold=%s tol=%s move=%s)" % (hd.hold_s, hd.tol_mm, hd.min_move_mm))
+
+
 def main():
     print("=" * 70)
     print("离线单测：协议 + 标定链路")
@@ -881,7 +1040,8 @@ def main():
     for fn in (test_downlink, test_pos_frame, test_done_paths,
                test_hand_eye, test_math, test_aligned_residual,
                test_camera_model, test_intrinsic_quality,
-               test_safety, test_hsv_calib, test_grasp_refine):
+               test_safety, test_hsv_calib, test_grasp_refine,
+               test_hold_detector):
         print("\n--- %s ---" % fn.__name__)
         try:
             fn()
