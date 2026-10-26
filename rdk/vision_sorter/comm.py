@@ -5,12 +5,26 @@
 下行帧（RDK -> STM32，10 字节）:
   [0]   0xAA
   [1]   0x55
-  [2]   shape_id   形状编号 0-6（255=未知）
-  [3]   color_id   颜色编号 0-9（255=未知）
-  [4:6] x_int16    机械臂目标 X(mm)，小端
-  [6:8] y_int16    机械臂目标 Y(mm)，小端
-  [8]   crc8       从帧头到 y 的校验，poly 0x07
-  [9]   0x0D       帧尾
+  [2]   material_id 物料编号 0-99 = 形状*10 + 颜色（255=未知）
+  [3]   color_id    颜色编号 0-9（= material_id % 10，供 32 交叉校验；255=未知）
+  [4:6] x_int16     机械臂目标 X(mm)，小端
+  [6:8] y_int16     机械臂目标 Y(mm)，小端
+  [8]   crc8        从帧头到 y 的校验，poly 0x07
+  [9]   0x0D        帧尾
+
+物料编号表（与 STM32 固件里的 10x10 表逐格对应，2026-10-26 对齐）:
+        红0  橙1  黄2  绿3  棕4  蓝5  紫6  品7  黑8  白9
+  0 长方体     0    1    2    3    4    5    6    7    8    9
+  1 镂空正方体 10   11   12   13   14   15   16   17   18   19
+  2 球        20   21   22   23   24   25   26   27   28   29
+  3 三棱柱    30   31   32   33   34   35   36   37   38   39
+  4 圆锥      40   41   42   43   44   45   46   47   48   49
+  5 正方体    50   51   52   53   54   55   56   57   58   59
+  6 圆柱      60   61   62   63   64   65   66   67   68   69
+  7 五棱柱    70   71   72   73   74   75   76   77   78   79
+  8 六棱柱    80   81   82   83   84   85   86   87   88   89
+  9 三棱锥    90   91   92   93   94   95   96   97   98   99
+  例如 11 = 橙色的镂空正方体。(0=长方体/5=正方体/8=六棱柱 我们的模型还没有对应类)
 
 注：z 轴已按需求移除（STM32 侧自行决定抓取高度），帧长 11 -> 10 字节。
 
@@ -45,9 +59,26 @@ except ImportError:          # PC 上没装 pyserial 时仍可 import 本模块�
     HAS_SERIAL = False
 
 # 形状/颜色和编号的映射，要和下位机固件里的表一致
-SHAPE_ID = {name: i for i, name in enumerate(C.SHAPE_NAMES)}
+# 2026-10-26：改成 STM32 的 10x10 表口径 —— 形状号不是 enumerate 顺序，
+# 而是"该形状在 32 表里的行号"（见 config.SHAPE_IDS 的表）。
+SHAPE_ID = dict(getattr(C, "SHAPE_IDS", None) or
+                {name: i for i, name in enumerate(C.SHAPE_NAMES)})
 # 颜色编号用 config.COLOR_IDS 显式固定，不依赖 COLOR_RANGES_HSV 的字典顺序
 COLOR_ID = dict(getattr(C, "COLOR_IDS", {}))
+UNKNOWN_ID = 255
+
+
+def material_id(shape_name, color_name):
+    """物料的整体编号 = 形状*10 + 颜色（与 STM32 的 100 格表一一对应）。
+
+    返回 (id, shape_id, color_id)；任一项未知时 id 返回 None，调用方按 255 发。
+    """
+    sid = SHAPE_ID.get(shape_name)
+    cid = COLOR_ID.get(color_name)
+    if sid is None or cid is None:
+        return None, (UNKNOWN_ID if sid is None else sid), \
+            (UNKNOWN_ID if cid is None else cid)
+    return sid * 10 + cid, sid, cid
 
 # 上行包标识
 DONE_BYTE = int(getattr(C, "GRAB_DONE_BYTE", 0x06))
@@ -67,15 +98,20 @@ def _crc8(data: bytes) -> int:
 
 
 def build_frame(shape_name, color_name, x_mm, y_mm) -> bytes:
-    """组帧（独立出来便于单测/离线校验）。10 字节，不含 z。"""
-    shape_id = SHAPE_ID.get(shape_name, 255)
-    color_id = COLOR_ID.get(color_name, 255)
+    """组帧（独立出来便于单测/离线校验）。10 字节，不含 z。
+
+    [2] 发的是**物料整体编号** = 形状*10 + 颜色（0~99，见 config.SHAPE_IDS 的表），
+    [3] 发颜色编号（= 编号 % 10），STM32 侧可用来交叉校验。
+    例如"橙色的镂空正方体" = 1*10 + 1 = 11；识别不出形状或颜色时两个字节都发 255。
+    """
+    mid, shape_id, color_id = material_id(shape_name, color_name)
+    id_byte = UNKNOWN_ID if mid is None else mid
     x_i = int(round(x_mm))
     y_i = int(round(y_mm))
     # int16 范围保护，越界截断而不是抛异常
     x_i = max(-32768, min(32767, x_i))
     y_i = max(-32768, min(32767, y_i))
-    body = bytes(C.FRAME_HEAD) + bytes([shape_id, color_id]) + \
+    body = bytes(C.FRAME_HEAD) + bytes([id_byte, color_id]) + \
         struct_pack_hh(x_i, y_i)
     crc = _crc8(body)
     return body + bytes([crc, C.FRAME_TAIL])

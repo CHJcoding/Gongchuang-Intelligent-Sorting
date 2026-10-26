@@ -529,10 +529,12 @@ class SortVisionNode(Node):
             cx_u, cy_u = camera_model.undistort_point(cx, cy)
             x_mm, y_mm, _ = pixel_to_robot(cx_u, cy_u)
             level, _why = camera_model.check_point(cx, cy)
+            _mid = comm.material_id(s, c)[0] if c else None
             parts.append(
-                "%s/%s(%.2f)%s px=(%.0f,%.0f) mm=(%.1f,%.1f)%s"
+                "%s/%s(%.2f)%s 物料号=%s px=(%.0f,%.0f) mm=(%.1f,%.1f)%s"
                 % (C.SHAPE_NAMES_CN.get(s, s), c if c else "判色失败", cconf,
-                   "" if len(hist) >= 3 else "·", cx, cy, x_mm, y_mm,
+                   "" if len(hist) >= 3 else "·",
+                   "?" if _mid is None else _mid, cx, cy, x_mm, y_mm,
                    " ⚠外推" if level != "ok" else ""))
         self._scan_track = alive
         self.get_logger().info("[扫描] %d 个目标: %s"
@@ -624,6 +626,10 @@ class SortVisionNode(Node):
                 "拒绝下发[%s]：%s。坐标不发出（想台架演示见 "
                 "BOARD_README「安全闸」一节）" % (code, why),
                 throttle_duration_sec=10.0)
+            # 即使不发，也把"本该发的 10 个字节"打出来 —— 32 那边对帧结构
+            # （帧头/物料号表/字节序/CRC）时不用等标定完成就能逐字节核对。
+            self._log_dry_frame(target["shape"], color, x_mm, y_mm, 0.0,
+                                prefix="[预演]")
             # 仍然发一条 result 供调试，但显式标记 blocked，下游应丢弃
             self.pub_result.publish(String(data=json.dumps({
                 "stamp": "%d.%09d" % (det_msg.header.stamp.sec,
@@ -647,12 +653,17 @@ class SortVisionNode(Node):
         if not self.auto_trigger:
             self.armed = False          # 单次触发模式：发一次就不再自动触发
 
+        mid = comm.material_id(target["shape"], color)[0]
         payload = {
             "stamp": "%d.%09d" % (det_msg.header.stamp.sec,
                                   det_msg.header.stamp.nanosec),
             "shape": target["shape"],
             "shape_cn": C.SHAPE_NAMES_CN.get(target["shape"], target["shape"]),
+            "shape_id": comm.SHAPE_ID.get(target["shape"], 255),
             "color": color,
+            "color_cn": C.COLOR_NAMES_CN.get(color, color),
+            "color_id": comm.COLOR_ID.get(color, 255),
+            "material_id": mid,
             "conf": round(target["conf"], 3),
             "color_conf": color_conf,
             "bbox": target["bbox"],
@@ -697,25 +708,27 @@ class SortVisionNode(Node):
         self._publish_state("SENT" if (self.serial_worker and self.serial_ok)
                             else "SIM_SENT")
 
-    def _log_dry_frame(self, shape, color, x_mm, y_mm, cycle_s):
-        """模拟模式：把"本来要发给 STM32 的那 10 个字节"原样打出来。
+    def _log_dry_frame(self, shape, color, x_mm, y_mm, cycle_s, prefix="[SIM]"):
+        """把"本来要发给 STM32 的那 10 个字节"原样打出来（不发）。
 
-        只打印毫米值没用 —— STM32 侧最容易错的是帧结构（帧头/编号表/字节序/CRC），
+        只打印毫米值没用 —— STM32 侧最容易错的是帧结构（帧头/物料号表/字节序/CRC），
         这些从 mm 值上看不出来。这里直接给 hex，可以逐字节对固件。
+        模拟模式和"被安全闸拦下"时都用它，所以前缀可传。
         """
         try:
             b = comm.build_frame(shape, color, x_mm, y_mm)
         except Exception as e:                        # noqa: BLE001
             self.get_logger().error(
-                "[SIM] 组帧失败: %s: %s" % (type(e).__name__, e))
+                "%s 组帧失败: %s: %s" % (prefix, type(e).__name__, e))
             return
         hexs = " ".join("%02X" % v for v in bytearray(b))
-        shape_id = comm.SHAPE_ID.get(shape, 255)
-        color_id = comm.COLOR_ID.get(color, 255)
+        mid, shape_id, color_id = comm.material_id(shape, color)
         self.get_logger().info(
-            "[SIM] 应发 STM32: %s  (%d 字节) | shape=%s(%d) color=%s(%d) "
+            "%s 应发 STM32: %s  (%d 字节) | 物料号=%s 形状=%s(%d) 颜色=%s(%d) "
             "x=%d y=%d crc=0x%02X tail=0x%02X | 模拟抓取 %.1fs"
-            % (hexs, len(b), shape, shape_id, color, color_id,
+            % (prefix, hexs, len(b), "?" if mid is None else mid,
+               C.SHAPE_NAMES_CN.get(shape, shape), shape_id,
+               C.COLOR_NAMES_CN.get(color, color), color_id,
                int(round(x_mm)), int(round(y_mm)), b[8], b[9], cycle_s))
 
     # ---------------- 标定热加载 ----------------

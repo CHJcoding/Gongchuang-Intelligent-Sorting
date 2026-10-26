@@ -53,10 +53,11 @@ def check(name, cond, detail=""):
 
 # ============================ 1. 下行帧 ============================
 def test_downlink():
+    # 圆锥(YZHU=4 行) + 绿(3 列) => 物料号 43 = 0x2B
     fr = comm.build_frame("YZHU", "green", -12, 407)
     hexs = " ".join("%02X" % b for b in fr)
     check("下行帧长度=10", len(fr) == 10, hexs)
-    check("下行帧字节完全一致", hexs == "AA 55 06 03 F4 FF 97 01 FE 0D", hexs)
+    check("下行帧字节完全一致", hexs == "AA 55 2B 03 F4 FF 97 01 07 0D", hexs)
     check("CRC 覆盖 0~7 字节", comm._crc8(fr[0:8]) == fr[8])
     check("帧头/帧尾", fr[0] == 0xAA and fr[1] == 0x55 and fr[9] == 0x0D)
 
@@ -65,8 +66,39 @@ def test_downlink():
     y = int.from_bytes(fr[6:8], "little", signed=True)
     check("x/y 小端且值正确", (x, y) == (-12, 407), "%s" % ((x, y),))
 
+    # ---- STM32 的 10x10 编号表（2026-10-26 对齐）----
+    fr2 = comm.build_frame("LK", "orange", 10, 20)
+    check("橙色镂空正方体 = 11", fr2[2] == 11 and fr2[3] == 1,
+          " ".join("%02X" % b for b in fr2))
+    check("橙色镂空正方体整帧",
+          " ".join("%02X" % b for b in fr2) == "AA 55 0B 01 0A 00 14 00 9A 0D",
+          " ".join("%02X" % b for b in fr2))
+    check("红色镂空正方体 = 10", comm.material_id("LK", "red")[0] == 10)
+    check("圆柱+白 = 69", comm.material_id("YZ", "white")[0] == 69)
+    check("五棱柱+黑 = 78", comm.material_id("WLZ", "black")[0] == 78)
+    check("三棱锥+紫 = 96", comm.material_id("SMT", "purple")[0] == 96)
+    check("形状行号不是 enumerate 顺序",
+          comm.SHAPE_ID["YZHU"] == 4 and comm.SHAPE_ID["YZ"] == 6
+          and comm.SHAPE_ID["SMT"] == 9, str(comm.SHAPE_ID))
+    check("形状号与 config.SHAPE_IDS 一致",
+          comm.SHAPE_ID == C.SHAPE_IDS, str(comm.SHAPE_ID))
+    check("每种形状都有编号（不许漏配）",
+          set(C.SHAPE_NAMES) == set(C.SHAPE_IDS),
+          str(set(C.SHAPE_NAMES) - set(C.SHAPE_IDS)))
+    check("32 表里有、我们没有的形状已登记",
+          set(C.SHAPE_IDS_MISSING) == {0, 5, 8}, str(C.SHAPE_IDS_MISSING))
+    check("物料号 = 形状*10+颜色 且互不重复",
+          len({comm.material_id(s, c)[0] for s in C.SHAPE_IDS
+               for c in C.COLOR_IDS}) == len(C.SHAPE_IDS) * len(C.COLOR_IDS))
+    check("编号字节一律 0~99", all(
+        comm.build_frame(s, c, 0, 0)[2] < 100
+        for s in C.SHAPE_IDS for c in C.COLOR_IDS))
+
     # 颜色编号固定，不随 HSV 字典增删漂移
     check("green=3", comm.COLOR_ID["green"] == 3)
+    check("brown=4（32 表第 4 列是棕，不是青）",
+          comm.COLOR_ID["brown"] == 4 and "cyan" not in comm.COLOR_ID)
+    check("blue=5", comm.COLOR_ID["blue"] == 5)
     check("black=8（未前移）", comm.COLOR_ID["black"] == 8)
     check("white=9（未前移）", comm.COLOR_ID["white"] == 9)
     check("pink=7（2026-10-26 启用）", comm.COLOR_ID["pink"] == 7)
@@ -80,10 +112,12 @@ def test_downlink():
           str(set(C.COLOR_RANGES_HSV) - set(C.COLOR_IDS)))
     check("magenta 已删除", "magenta" not in comm.COLOR_ID
           and "magenta" not in C.COLOR_RANGES_HSV)
-    check("未知颜色 -> 255",
-          comm.build_frame("YZHU", "nope", 0, 0)[3] == 255)
-    check("未知形状 -> 255",
-          comm.build_frame("nope", "green", 0, 0)[2] == 255)
+    check("未知颜色 -> 编号 255",
+          comm.build_frame("YZHU", "nope", 0, 0)[2] == 255
+          and comm.build_frame("YZHU", "nope", 0, 0)[3] == 255)
+    check("未知形状 -> 编号 255",
+          comm.build_frame("nope", "green", 0, 0)[2] == 255
+          and comm.build_frame("nope", "green", 0, 0)[3] == 3)
 
     # int16 越界截断而不是抛异常
     big = comm.build_frame("YZHU", "green", 99999, -99999)
