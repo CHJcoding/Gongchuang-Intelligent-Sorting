@@ -1033,6 +1033,79 @@ def test_hold_detector():
           "(hold=%s tol=%s move=%s)" % (hd.hold_s, hd.tol_mm, hd.min_move_mm))
 
 
+# ============================ 12. 串口设备自动定位 + 文本 OK ============================
+def test_serial_port():
+    # --- 候选顺序：by-id 优先，其次 config.SERIAL_PORT，再候选表 ---
+    cands = comm.serial_port_candidates()
+    check("候选表非空", len(cands) >= 1, cands)
+    check("候选里含 config.SERIAL_PORT", C.SERIAL_PORT in cands,
+          (C.SERIAL_PORT, cands))
+    check("config.SERIAL_PORT 是 STM32 的 /dev/ttyACM0",
+          C.SERIAL_PORT == "/dev/ttyACM0", C.SERIAL_PORT)
+    check("候选表含备用 ACM1", "/dev/ttyACM1" in cands, cands)
+    check("候选不含重复项", len(cands) == len(set(cands)), cands)
+
+    # --- 存在性判断：给了真实存在的路径就用它 ---
+    tmp = tempfile.mkdtemp(prefix="port_test_")
+    fake = os.path.join(tmp, "ttyACM0")
+    with open(fake, "w", encoding="utf-8") as f:
+        f.write("")
+    check("resolve 优先返回已存在的 preferred",
+          comm.resolve_serial_port(fake) == fake, comm.resolve_serial_port(fake))
+
+    # --- 全都不存在时返回首选名字（不能返回空串，否则报错信息看不懂）---
+    missing = os.path.join(tmp, "nope_device")
+    got = comm.resolve_serial_port(missing)
+    check("全不存在时返回首选名字而不是空串", got == missing, got)
+
+    # --- 文本 OK 也算抓取完成 ---
+    old = C.GRAB_DONE_ACCEPT_ASCII
+    try:
+        for raw, label in ((b"OK", "大写 OK"), (b"ok", "小写 ok"),
+                           (b"OK\r\n", "OK 带回车换行"),
+                           (b"\x00\x06\x00", "二进制 0x06")):
+            c = comm.Comm()
+            c._rx = bytearray(raw)
+            c._parse_rx()
+            check("完成信号：%s" % label, c.poll_done() is True, raw)
+            check("完成信号 %s 不重复触发" % label, c.poll_done() is False)
+
+        # 关掉 ASCII 开关后 "OK" 不应被当成完成
+        C.GRAB_DONE_ACCEPT_ASCII = False
+        c = comm.Comm()
+        c._rx = bytearray(b"OK")
+        c._parse_rx()
+        check("关掉开关后文本 OK 不触发完成", c.poll_done() is False)
+        C.GRAB_DONE_ACCEPT_ASCII = True
+
+        # 坐标帧 + OK 混在同一条流里：两个都要正确解析
+        c = comm.Comm()
+        c._rx = bytearray(comm.build_pos_frame(-12, 407) + b"OK")
+        c._parse_rx()
+        check("坐标帧与文本 OK 混流：坐标正确",
+              c.poll_position() == (-12, 407), c.latest_position)
+        check("坐标帧与文本 OK 混流：完成信号正确", c.poll_done() is True)
+
+        # 'O' 被拆在两次读之间（半包）也不能吞掉
+        c = comm.Comm()
+        c._rx = bytearray(b"O")
+        c._parse_rx()
+        check("半包 'O' 不误触发完成", c.poll_done() is False)
+        c._rx.extend(b"K")
+        c._parse_rx()
+        check("半包补齐后识别为完成", c.poll_done() is True)
+
+        # 坐标载荷里的 0x4B/0x4F 不能被误判成 OK
+        c = comm.Comm()
+        c._rx = bytearray(comm.build_pos_frame(0x4F4B % 32768, -1))
+        c._parse_rx()
+        check("坐标载荷里的 0x4B/0x4F 不误判为 OK",
+              c.poll_done() is False and c.latest_position is not None,
+              (c.latest_position, c.done_seen))
+    finally:
+        C.GRAB_DONE_ACCEPT_ASCII = old
+
+
 def main():
     print("=" * 70)
     print("离线单测：协议 + 标定链路")
@@ -1041,7 +1114,7 @@ def main():
                test_hand_eye, test_math, test_aligned_residual,
                test_camera_model, test_intrinsic_quality,
                test_safety, test_hsv_calib, test_grasp_refine,
-               test_hold_detector):
+               test_hold_detector, test_serial_port):
         print("\n--- %s ---" % fn.__name__)
         try:
             fn()

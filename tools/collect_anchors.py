@@ -5,11 +5,12 @@
 
     # 1. 先拍一张棋盘格照片（见 BOARD_README 第八节）
     # 2. 采集 3 个锚点（把夹爪尖依次降到 3 个角点上方，每次回车）
-    python3 tools/collect_anchors.py --port /dev/ttyUSB0 --corners 0 8 53 \
+    #    --port 省略即自动找 /dev/ttyACM0（STM32 是 USB CDC）
+    python3 tools/collect_anchors.py --corners 0 8 53 \
             --image /root/board.jpg --out /root/vision_ws/anchors.json
 
     # 2'. 停顿自动采（推荐）：电机停住 hold_s 秒自动记，运动中/缓慢漂移的位姿丢弃
-    python3 tools/collect_anchors.py --auto --port /dev/ttyUSB0 --corners 0 8 53 \
+    python3 tools/collect_anchors.py --auto --corners 0 8 53 \
             --image /root/board.jpg --pose-log /root/vision_ws/poses.jsonl
 
     # 3. 解算（自动读锚点文件，旋转和手性都不用猜）
@@ -61,6 +62,19 @@ for _stream in (sys.stdout, sys.stderr):                # Windows 控制台 GBK 
 
 def _cfg(name, default):
     return getattr(C, name, default) if C is not None else default
+
+
+def _default_port():
+    """默认串口：复用 comm.resolve_serial_port（by-id → config → 候选表）。
+
+    STM32 是 USB CDC，设备号可能从 ttyACM0 漂到 ttyACM1，
+    这里统一成同一个解析函数，免得工具和节点认定的端口不一样。
+    """
+    try:
+        import comm
+        return comm.resolve_serial_port() or _cfg("SERIAL_PORT", "/dev/ttyACM0")
+    except Exception:                                   # noqa: BLE001
+        return _cfg("SERIAL_PORT", "/dev/ttyACM0")
 
 
 POS_HEAD = int(_cfg("POS_FRAME_HEAD", 0x07))
@@ -794,8 +808,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         description="采集手眼标定锚点（STM32 回传坐标，不用手抄）；"
                     "--auto 用停顿检测自动记，--replay 离线复盘")
-    ap.add_argument("--port", default=_cfg("SERIAL_PORT", "/dev/ttyUSB0"),
-                    help="串口设备，PC 上是 COM7 这种")
+    ap.add_argument("--port", default=_default_port(),
+                    help="串口设备；默认自动找 /dev/ttyACM0（STM32 CDC）")
     ap.add_argument("--baud", type=int, default=_cfg("SERIAL_BAUD", 115200))
     ap.add_argument("--corners", nargs="+", default=["0", "8", "53"],
                     help="要采的棋盘格角点序号（看 planar_calib 打印的抽样表）")

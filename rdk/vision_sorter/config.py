@@ -207,7 +207,16 @@ SERIAL_SIM = False         # True: 不连下位机，只打印指令（无 STM32
 SCAN_ALL = False           # True: 每秒把所有目标+判色结果打一行 [扫描]（台架联调用，只影响日志）
 
 # ============ 串口 (Linux) ============
-SERIAL_PORT = "/dev/ttyUSB0"
+# STM32 走 USB CDC，设备名是 /dev/ttyACM0（不是 CH340 的 /dev/ttyUSB0）。
+# 拔插/重启后编号可能变成 ACM1、ACM2，所以给一串候选，
+# comm.resolve_serial_port() 会按 /dev/serial/by-id → SERIAL_PORT → 候选表 的顺序找。
+SERIAL_PORT = "/dev/ttyACM0"
+SERIAL_PORT_CANDIDATES = [
+    "/dev/ttyACM0",
+    "/dev/ttyACM1",
+    "/dev/ttyUSB0",
+    "/dev/ttyUSB1",
+]
 SERIAL_BAUD = 115200
 FRAME_HEAD = [0xAA, 0x55]
 FRAME_TAIL = 0x0D
@@ -217,13 +226,17 @@ TIMEOUT_S = 0.5            # 仅 SEND_WAIT_ACK=True 时生效
 
 # ============ 抓取完成判定（一发一抓的流控）============
 # 单向发送时 RDK 不知道 STM32 抓完没有，必须选一种"解锁"依据：
-#   "byte"  : STM32 抓取动作结束时回 1 字节 GRAB_DONE_BYTE
+#   "byte"  : STM32 抓取动作结束时回 1 字节 GRAB_DONE_BYTE（或文本 "OK"）
 #             —— 这是【动作级完成信号】，不是帧级 ACK；不需要重试、不需要握手。
 #   "timer" : 纯开环，按 GRAB_CYCLE_S 定时解锁，STM32 一行代码都不用加。
-GRAB_DONE_MODE = "timer"
+# 2026-10-26 现场确认：STM32 抓完放好会主动发 OK 给 RDK，所以用 "byte"（事件驱动，
+# 比定时更准，也不会因为节拍估错而提前下发）。
+GRAB_DONE_MODE = "byte"
 GRAB_CYCLE_S = 6.0         # timer 模式：一次完整抓取循环时长（现场实测后调准）
 GRAB_DONE_BYTE = 0x06      # byte 模式：完成字节（与 ACK_BYTE 同值也可，语义不同）
-GRAB_TIMEOUT_S = 12.0      # 兜底：超时强制解锁，防止永久卡死
+# STM32 也可能直接 printf("OK") 回文本，两种都认，免得联调时死等到超时。
+GRAB_DONE_ACCEPT_ASCII = True
+GRAB_TIMEOUT_S = 20.0      # 兜底：超时强制解锁，防止永久卡死（一个完整搬运周期留足）
 BLANK_AFTER_DONE_S = 0.8   # 抓完后再屏蔽这么久（等机械臂收回、离开视野）
 GRAB_BLANK_DETECT = True   # 抓取期间忽略检测：机械臂进入视野会被误检成物料
 SEND_WAIT_ACK = False      # False = 发完就走，不等帧级 ACK（你现在的方案）

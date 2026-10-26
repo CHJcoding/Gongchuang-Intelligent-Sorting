@@ -231,8 +231,7 @@ class SortVisionNode(Node):
             self.serial_worker = SerialWorker(self.comm, self)
             self.serial_worker.start()
             self.serial_ok = True
-            self.get_logger().info("串口已打开 %s @%d" %
-                                   (C.SERIAL_PORT, C.SERIAL_BAUD))
+            self.get_logger().info("串口已打开 %s @%d" % (self._comm_port(), C.SERIAL_BAUD))
         except Exception as e:
             self.comm = None
             self.serial_worker = None
@@ -249,11 +248,26 @@ class SortVisionNode(Node):
                 # 生产模式：明确报错，拒绝下发，并周期性重试
                 self.get_logger().error(
                     "串口打开失败（%s: %s）—— 进入【串口故障】状态，拒绝下发。"
-                    "检查 %s 是否存在（ls /dev/ttyUSB*）、是否被占用，"
-                    "插好后会自动重连（每 %.0fs 试一次）" %
-                    (type(e).__name__, e, C.SERIAL_PORT,
+                    "检查 %s 是否插好（ls /dev/ttyACM* 或 ls /dev/serial/by-id/）、"
+                    "是否被别的程序占用，插好后会自动重连（每 %.0fs 试一次）" %
+                    (type(e).__name__, e, self._comm_port(),
                        getattr(C, "SERIAL_REOPEN_S", 5.0)))
                 self._publish_state("SERIAL_ERROR")
+
+    def _comm_port(self):
+        """日志里显示"实际用哪个串口"：已打开就报真实设备，否则报解析出来的候选。
+
+        STM32 是 USB CDC，拔插后可能从 ttyACM0 变成 ttyACM1，
+        所以日志要打真实解析结果，不能只打 config 里的写死值。
+        """
+        port = getattr(self.comm, "port", None) if self.comm is not None else None
+        if port:
+            return port
+        try:
+            from comm import resolve_serial_port
+            return resolve_serial_port()
+        except Exception:                              # noqa: BLE001
+            return C.SERIAL_PORT
 
     def _try_reopen_serial(self):
         """串口掉了以后周期性重连（USB 转串口热插拔能自愈）。"""
@@ -273,7 +287,7 @@ class SortVisionNode(Node):
                 self.serial_worker = SerialWorker(self.comm, self)
                 self.serial_worker.start()
                 self.get_logger().info("串口已恢复 %s @%d，继续正常下发" %
-                                       (C.SERIAL_PORT, C.SERIAL_BAUD))
+                                       (self._comm_port(), C.SERIAL_BAUD))
                 self._publish_state("SERIAL_OK")
             else:
                 self.get_logger().warn("串口仍打不开，%.0fs 后重试" % period,

@@ -133,8 +133,8 @@ python3 sort_vision_node.py            # 默认 auto_trigger=true
 
 | 模式 | STM32 要做什么 | RDK 怎么解锁 | 特点 |
 |---|---|---|---|
-| `"timer"`（默认） | **什么都不用做** | 发帧后等 `GRAB_CYCLE_S`（默认 6s）定时解锁 | 最省事，时间是估的 |
-| `"byte"`（推荐） | 抓取动作**结束时**发 1 字节 `0x06` | 收到完成字节立即解锁，`GRAB_TIMEOUT_S` 兜底 | 自适应、节拍最快 |
+| `"byte"`（**当前默认**） | 抓取动作**结束时**发 1 字节 `0x06`，或直接 `printf("OK")` | 收到完成信号立即解锁，`GRAB_TIMEOUT_S` 兜底 | 自适应、节拍最快（现场 32 就是发 OK）|
+| `"timer"` | **什么都不用做** | 发帧后等 `GRAB_CYCLE_S`（默认 6s）定时解锁 | 最省事，时间是估的 |
 
 **`0x06` 的两种语义别混**：
 - **帧级 ACK** = 收到帧就回 → "我收到这条指令了"（需要重试握手）→ 你说不要的是这个
@@ -150,10 +150,11 @@ python3 sort_vision_node.py            # 默认 auto_trigger=true
 
 相关参数（全在 `config.py`）：
 ```python
-GRAB_DONE_MODE   = "timer"  # "timer" | "byte"
+GRAB_DONE_MODE   = "byte"   # "byte"(默认，32 发 0x06 或 "OK") | "timer"
 GRAB_CYCLE_S     = 6.0      # timer：一次完整抓取循环时长（实测后调准）
 GRAB_DONE_BYTE   = 0x06     # byte：完成字节
-GRAB_TIMEOUT_S   = 12.0     # 兜底强制解锁
+GRAB_DONE_ACCEPT_ASCII = True   # byte：文本 "OK"/"ok" 也认（32 用 printf 发也行）
+GRAB_TIMEOUT_S   = 20.0     # 兜底强制解锁（一个完整搬运周期留足）
 BLANK_AFTER_DONE_S = 0.8    # 抓完后的收臂屏蔽
 GRAB_BLANK_DETECT  = True   # 抓取期间屏蔽检测
 SEND_WAIT_ACK      = False  # 不等帧级 ACK
@@ -404,11 +405,11 @@ Y 反向 → `--mirror y`；两轴同时反（180°）→ `--rot 180`。
 
 ```bash
 # ① 采锚点（板子上，串口独占，先跑 stop_all.sh 停掉 sort_vision_node）
-python3 tools/collect_anchors.py --port /dev/ttyUSB0 --corners 0 8 53 \
+python3 tools/collect_anchors.py --port /dev/ttyACM0 --corners 0 8 53 \
         --image /root/board.jpg --out /root/vision_ws/anchors.json
 
 # ①' 更省事：停顿自动采（电机停住就自动记，运动中/缓慢漂移的位姿直接丢弃）
-python3 tools/collect_anchors.py --auto --port /dev/ttyUSB0 --corners 0 8 53 \
+python3 tools/collect_anchors.py --auto --port /dev/ttyACM0 --corners 0 8 53 \
         --image /root/board.jpg --pose-log /root/vision_ws/poses.jsonl
 
 # ② 解算（自动读锚点文件）
@@ -493,7 +494,7 @@ GRAB_DONE_MODE = "byte"    # config.py：用 0x06 做完成判定，不再靠定
 验证：
 
 ```bash
-python3 tools/gantry_monitor.py --port /dev/ttyUSB0     # 板上，实时打印坐标
+python3 tools/gantry_monitor.py --port /dev/ttyACM0     # 板上，实时打印坐标
 python tools/gantry_monitor.py --port COM7              # PC 上
 ```
 
@@ -504,7 +505,7 @@ python tools/gantry_monitor.py --port COM7              # PC 上
 
 ```bash
 python tools/planar_calib.py --self-test          # 合成棋盘：检测→求解→对齐→3锚点→JSON
-python tools/test_protocol.py                     # 协议 + 标定 + 内参质量闸 + 安全闸 + 抓取点精修 + 停顿取位姿，190 项
+python tools/test_protocol.py                     # 协议 + 标定 + 内参质量闸 + 安全闸 + 抓取点精修 + 停顿取位姿 + 串口自适配/文本 OK，211 项
 python tools/gantry_monitor.py --simulate         # 坐标帧解析器抗噪
 python tools/collect_anchors.py --simulate        # 锚点采集流程（含坏 CRC/半包 + 停顿检测）
 python tools/hsv_calib.py --data 标定图片          # HSV 阈值标定（见第九节）
@@ -563,7 +564,7 @@ python tools/hsv_calib.py --data 标定图片 --report hsv_report.md
 | 闸 | 什么时候关 | 原因 |
 |---|---|---|
 | **标定闸** | `hand_eye.json` 不存在 | 此时坐标来自 `config.HAND_EYE_M` 占位值，是**假的**。龙门装好后一旦忘了标定就会满场乱走 |
-| **串口闸** | `/dev/ttyUSB0` 打不开或写失败 | 此时字节根本没发给 STM32，日志里却"看起来在抓" |
+| **串口闸** | `/dev/ttyACM0` 打不开或写失败 | 此时字节根本没发给 STM32，日志里却"看起来在抓" |
 
 启动时会连打两行横幅，一眼看出现在能不能动：
 

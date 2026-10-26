@@ -18,10 +18,13 @@
     # 没有 STM32 时先验证脚本本身
     python gantry_monitor.py --simulate
 
+    # 不知道对方到底发什么格式时：原始字节转储
+    python gantry_monitor.py --raw --raw-duration 10
+
     # 有 STM32：注意同一时刻只能有一个程序占用串口，
     # 标定时先把 sort_vision_node 停掉（或让它来跑这个功能）
     python gantry_monitor.py --port COM5
-    python gantry_monitor.py --port /dev/ttyUSB0 --csv trace.csv
+    python gantry_monitor.py --port /dev/ttyACM0 --csv trace.csv
 """
 import argparse
 import random
@@ -127,6 +130,47 @@ def run_simulate(n=40):
     return 0 if ok else 1
 
 
+def run_raw(port, baud, duration=None):
+    """原始字节转储：不管什么格式，收到什么就按十六进制打出来。
+
+    联调第一天最有用——如果 STM32 发的其实不是 0x07 帧（比如回了 ASCII "OK"、
+    或者自定义的 AA 55 帧），普通模式会一帧都解不出来、看起来像"串口没数据"，
+    而这里能直接把真实字节看清。
+    """
+    try:
+        import serial
+    except ImportError:
+        print("没装 pyserial：pip3 install pyserial")
+        return 2
+
+    ser = serial.Serial(port, baud, timeout=0.05)
+    print("已打开 %s @%d —— 原始转储模式（Ctrl+C 退出）" % (port, baud))
+    never = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+             "abcdefghijklmnopqrstuvwxyz0123456789 .,:;-+*/()[]{}<>=_#%")
+    t0 = time.time()
+    total = 0
+    try:
+        while True:
+            data = ser.read(256)
+            if data:
+                total += len(data)
+                hexs = " ".join("%02X" % b for b in data)
+                text = "".join(chr(b) if chr(b) in never else "." for b in data)
+                print("[%7.2fs] %3d B | %s | %s"
+                      % (time.time() - t0, len(data), hexs, text))
+            if duration and time.time() - t0 >= duration:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        ser.close()
+        print("\n共收到 %d 字节 / %.1f 秒" % (total, time.time() - t0))
+    if total == 0:
+        print("⚠ 一个字节都没收到：检查 TX/RX 是否接反、波特率、以及 STM32 是否真的在发")
+        return 1
+    return 0
+
+
 def run_serial(port, baud, csv_path=None, limit=None):
     try:
         import serial
@@ -182,16 +226,23 @@ def run_serial(port, baud, csv_path=None, limit=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="STM32 夹爪坐标帧监视器")
-    ap.add_argument("--port", default="/dev/ttyUSB0", help="串口，如 COM5 或 /dev/ttyUSB0")
+    ap.add_argument("--port", default="/dev/ttyACM0",
+                    help="串口，如 COM5 或 /dev/ttyACM0（STM32 是 USB CDC）")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--csv", help="把收到的坐标记成 CSV")
     ap.add_argument("--limit", type=int, help="收到多少帧后退出（测试用）")
     ap.add_argument("--simulate", action="store_true", help="不连串口，验证解析器")
     ap.add_argument("--self-test", action="store_true", help="同 --simulate")
+    ap.add_argument("--raw", action="store_true",
+                    help="原始字节转储（不知道对方发的是什么格式时先用这个）")
+    ap.add_argument("--raw-duration", type=float, default=None,
+                    help="--raw 模式跑多少秒后自动退出")
     args = ap.parse_args(argv)
 
     if args.simulate or args.self_test:
         return run_simulate()
+    if args.raw:
+        return run_raw(args.port, args.baud, args.raw_duration)
     return run_serial(args.port, args.baud, args.csv, args.limit)
 
 

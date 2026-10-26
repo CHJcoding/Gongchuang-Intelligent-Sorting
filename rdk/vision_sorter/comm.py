@@ -2,6 +2,10 @@
 """
 与下位机(STM32)的串口通信协议。
 
+串口设备：STM32 是 USB CDC，默认 /dev/ttyACM0。拔插/重启后可能变 ACM1，
+由 resolve_serial_port() 自动挑：/dev/serial/by-id/* → config.SERIAL_PORT
+→ config.SERIAL_PORT_CANDIDATES，设备号漂移不用改代码。
+
 下行帧（RDK -> STM32，10 字节）:
   [0]   0xAA
   [1]   0x55
@@ -28,10 +32,14 @@
 
 注：z 轴已按需求移除（STM32 侧自行决定抓取高度），帧长 11 -> 10 字节。
 
-上行（STM32 -> RDK），三种包可以混在同一条串口上，RDK 侧统一解析：
+上行（STM32 -> RDK），四种包可以混在同一条串口上，RDK 侧统一解析：
   1) 抓取完成 1 字节：0x06
        仅 GRAB_DONE_MODE == "byte" 时被调用。这是"抓完了"的动作级信号，
        不是"收到帧了"的帧级 ACK。
+  1b) 抓取完成 文本 "OK" / "ok"
+       现场 STM32 常用 printf("OK") 表示"抓完放好了"，RDK 也认，
+       由 GRAB_DONE_ACCEPT_ASCII 控制（默认 True）。两种写法都支持，
+       联调时不用为了凑协议改固件。
   2) 抓取完成 + 结果 2 字节：0x06 + status
        status: 0x00=成功 0x01=空抓/失败 0x02=急停 0x03=其它
        仅 GRAB_STATUS_ENABLE=True 时启用（当前未启用）。
@@ -45,6 +53,7 @@
 
 另外保留可选的帧级 ACK 逻辑（SEND_WAIT_ACK=True 时启用，默认关闭）。
 """
+import os
 import struct
 import threading
 import time
@@ -133,9 +142,50 @@ def build_pos_frame(x_mm, y_mm) -> bytes:
     return body + bytes([_crc8(body)])
 
 
+def serial_port_candidates(preferred=None):
+    """按可靠性排序返回候选串口设备（只排序，不检查是否存在）。
+
+    顺序：/dev/serial/by-id/*（USB CDC 的稳定符号链接，拔插不变号）
+          → preferred（参数或 config.SERIAL_PORT）
+          → config.SERIAL_PORT_CANDIDATES
+    """
+    out = []
+    by_id = "/dev/serial/by-id"
+    try:
+        if os.path.isdir(by_id):
+            for name in sorted(os.listdir(by_id)):
+                out.append(os.path.join(by_id, name))
+    except OSError:
+        pass
+    first = preferred or getattr(C, "SERIAL_PORT", "/dev/ttyACM0")
+    if first:
+        out.append(first)
+    for p in (getattr(C, "SERIAL_PORT_CANDIDATES", None) or []):
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def resolve_serial_port(preferred=None):
+    """返回第一个真实存在的串口设备名。
+
+    都不存在时返回首选名字（不变空字符串），这样 open() 会抛
+    "could not open port /dev/ttyACM0" 这种一眼能看懂的错，而不是空路径的怪错。
+    """
+    cands = serial_port_candidates(preferred)
+    for p in cands:
+        try:
+            if os.path.exists(p):
+                return p
+        except OSError:
+            continue
+    return cands[0] if cands else ""
+
+
 class Comm:
     def __init__(self):
         self.ser = None
+        self.port = None                  # 实际打开的设备名（open() 时解析，日志里打出来）
         self.lock = threading.Lock()      # 写线程(发送) 与 ROS定时器(读完成字节) 共用串口
         self.done_seen = False
         self.done_status = None           # 2 字节协议的结果码；1 字节协议为 None
@@ -148,9 +198,11 @@ class Comm:
     def open(self):
         if not HAS_SERIAL:
             raise RuntimeError("未安装 pyserial：pip3 install pyserial")
+        port = resolve_serial_port()
         with self.lock:
+            self.port = port
             self.ser = serial.Serial(
-                C.SERIAL_PORT, C.SERIAL_BAUD, timeout=0)   # 非阻塞读
+                port, C.SERIAL_BAUD, timeout=0)   # 非阻塞读
             time.sleep(0.2)
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
@@ -254,9 +306,23 @@ class Comm:
         buf = self._rx
         i, n = 0, len(buf)
         status_mode = bool(getattr(C, "GRAB_STATUS_ENABLE", False))
+        ascii_mode = bool(getattr(C, "GRAB_DONE_ACCEPT_ASCII", False))
 
         while i < n:
             b = buf[i]
+
+            # ---- 抓取完成：文本 "OK"（STM32 直接 printf("OK") 的情况）----
+            # 放在 0x06 之前判断：'O'=0x4F 不会和 0x06/0x07 包头撞车。
+            if ascii_mode and b in (0x4F, 0x6F):        # 'O' / 'o'
+                if i + 1 >= n:
+                    break                               # 半包，等下一个字节
+                if buf[i + 1] in (0x4B, 0x6B):          # 'K' / 'k'
+                    self.done_seen = True
+                    self.done_status = None
+                    i += 2
+                    continue
+                i += 1
+                continue
 
             # ---- 抓取完成：0x06 [status] ----
             if b == DONE_BYTE:
