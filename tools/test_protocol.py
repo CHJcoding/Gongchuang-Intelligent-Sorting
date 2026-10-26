@@ -742,7 +742,7 @@ def test_grasp_refine():
     ok_desc = GR.describe(r)
     fb_desc = GR.describe(r5)
     check("精修：describe 成功/回退都能出字符串",
-          isinstance(ok_desc, str) and "精修[" in ok_desc and
+          isinstance(ok_desc, str) and "抓取点=" in ok_desc and
           isinstance(fb_desc, str) and "回退" in fb_desc,
           ok_desc + " | " + fb_desc)
 
@@ -752,6 +752,92 @@ def test_grasp_refine():
     check("精修：默认模式是 centroid",
           getattr(C, "GRASP_POINT_MODE", "") == "centroid",
           getattr(C, "GRASP_POINT_MODE", ""))
+
+    # --- 13. 自适应收窄：背景同色相但饱和度低（蓝色最容易糊）、
+    #         全局区间把背景也算进来时，要靠中位色把背景挤出去 ---
+    img = np.zeros((200, 200, 3), np.uint8)
+    img[:, :] = hsv_bgr(110, 60, 200)            # 背景：同色相，S=60（落进 blue 区间）
+    cv2.circle(img, (100, 101), 18, hsv_bgr(110, 220, 200), -1)   # 物体：S=220
+    coarse = GR.color_mask(cv2.cvtColor(img, cv2.COLOR_BGR2HSV), "blue")
+    check("精修：合成图里全局掩膜确实糊到背景（复现问题）",
+          int(np.count_nonzero(coarse)) > 0.9 * img.shape[0] * img.shape[1],
+          "coarse=%d/%d" % (int(np.count_nonzero(coarse)),
+                            img.shape[0] * img.shape[1]))
+    r13 = GR.refine(img, [72, 73, 128, 129], "blue")
+    check("精修：自适应能把背景挤出去", r13["ok"], r13["reason"])
+    check("精修：自适应选中的就是收窄掩膜",
+          r13.get("method") == "color_adaptive", str(r13.get("method")))
+    err13 = ((r13["point"][0] - 100) ** 2 + (r13["point"][1] - 101) ** 2) ** 0.5
+    check("精修：自适应后质心误差<1px", err13 < 1.0, "err=%.2f" % err13)
+    tb13 = r13["tight_bbox"]
+    check("精修：自适应后贴合框≈物体36x36",
+          abs((tb13[2] - tb13[0]) - 36) <= 3 and abs((tb13[3] - tb13[1]) - 36) <= 3,
+          str(tb13))
+
+    # --- 14. 掩膜太窄（框里只有一条细缝）必须回退，不能拿它当抓取点 ---
+    img = blank()
+    cv2.rectangle(img, (95, 60), (105, 140), GREEN, -1)     # 10x80 竖条
+    r14 = GR.refine(img, [72, 73, 128, 129], "green")       # 框 56x56
+    check("精修：掩膜太窄时回退框中心", not r14["ok"], r14["reason"])
+    check("精修：窄掩膜回退点=框中心",
+          abs(r14["point"][0] - 100) < 0.01 and abs(r14["point"][1] - 101) < 0.01,
+          str(r14["point"]))
+
+    # --- 15. 掩膜铺满整个框（物体比框大）必须回退 ---
+    img = np.zeros((200, 200, 3), np.uint8)
+    img[:, :] = GREEN                                       # 整幅都是绿
+    r15 = GR.refine(img, [72, 73, 128, 129], "green")
+    check("精修：掩膜铺满框时回退", not r15["ok"], r15["reason"])
+
+    # --- 16. 三角形投影：覆盖率只有 ~0.5，不能因为覆盖率门槛被误杀 ---
+    #      （实机绿色三棱柱 coverage=0.54，旧的 0.55 门槛直接把它拒了）
+    img = blank()
+    pts = np.array([[100, 80], [72, 122], [128, 122]], np.int32)
+    cv2.fillConvexPoly(img, pts, GREEN)
+    r16 = GR.refine(img, [64, 73, 136, 129], "green")
+    check("精修：三角形(覆盖率~0.5)仍判可信", r16["ok"], r16["reason"])
+    tb16 = r16["tight_bbox"] if r16["ok"] else (0, 0, 0, 0)
+    check("精修：三角形质心≈重心(100,108)",
+          r16["ok"] and abs(r16["point"][0] - 100) < 2.0 and
+          abs(r16["point"][1] - 108) < 3.0, str(r16["point"]))
+    check("精修：三角形贴合框高≈42", r16["ok"] and
+          abs((tb16[3] - tb16[1]) - 42) <= 3, str(tb16))
+
+    # --- 17. 掩膜偏到框的一侧（质心离框中心 > 35% 短边）必须回退 ---
+    img = blank()
+    cv2.circle(img, (80, 101), 12, GREEN, -1)      # 物体贴框左半边
+    r17 = GR.refine(img, [72, 73, 128, 129], "green")
+    check("精修：掩膜偏一侧时回退", not r17["ok"], r17["reason"])
+    check("精修：偏一侧回退点=框中心",
+          abs(r17["point"][0] - 100) < 0.01 and abs(r17["point"][1] - 101) < 0.01,
+          str(r17["point"]))
+
+    # --- 18. 白底上的白物料：颜色区间必然分不开，靠明度 Otsu 兜底 ---
+    #      实测白色圆柱就是这样：白台面 V≈215、物体 V≈165，
+    #      white 区间 (0,0,170)-(179,35,255) 只框到背景，掩膜是"一圈墙"。
+    img = np.zeros((200, 200, 3), np.uint8)
+    img[:, :] = hsv_bgr(0, 10, 215)                      # 白台面
+    cv2.circle(img, (100, 101), 18, hsv_bgr(0, 12, 165), -1)   # 白物料（略暗）
+    coarse_w = GR.color_mask(cv2.cvtColor(img, cv2.COLOR_BGR2HSV), "white")
+    box_c = coarse_w[73:129, 72:128]
+    check("精修：白底白物的颜色掩膜确实只圈到背景（复现问题）",
+          int(np.count_nonzero(box_c)) > 0.35 * box_c.size,
+          "inside-box white px=%d/%d" % (int(np.count_nonzero(box_c)),
+                                         box_c.size))
+    r18 = GR.refine(img, [72, 73, 128, 129], "white")
+    check("精修：白底白物能靠 Otsu 判可信", r18["ok"], r18["reason"])
+    check("精修：白底白物走 gray_otsu",
+          r18.get("method") == "gray_otsu", str(r18.get("method")))
+    err18 = ((r18["point"][0] - 100) ** 2 + (r18["point"][1] - 101) ** 2) ** 0.5
+    check("精修：白底白物质心误差<1.5px", err18 < 1.5, "err=%.2f" % err18)
+
+    # --- 19. 颜色掩膜本身可用时，不该被 Otsu 抢走 ---
+    img = blank()
+    cv2.circle(img, (100, 101), 20, GREEN, -1)
+    r19 = GR.refine(img, [72, 73, 128, 129], "green")
+    check("精修：彩色物体仍走颜色掩膜", r19["ok"] and
+          r19.get("method") in ("color", "color_adaptive"),
+          "%s %s" % (r19.get("method"), r19["reason"]))
 
 
 def main():

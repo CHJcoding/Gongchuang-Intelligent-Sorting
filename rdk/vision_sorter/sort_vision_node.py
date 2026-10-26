@@ -576,7 +576,7 @@ class SortVisionNode(Node):
             cx, cy = gp["point"]
             self.stat_refine_ok += 1
             self.get_logger().info(
-                "抓取点%s 框中心=(%.1f,%.1f) 偏移=%.1fpx"
+                "抓取点精修%s 框中心=(%.1f,%.1f) 偏移=%.1fpx"
                 % (grasp_refine.describe(gp), box_cx, box_cy,
                    ((cx - box_cx) ** 2 + (cy - box_cy) ** 2) ** 0.5),
                 throttle_duration_sec=1.0)
@@ -659,9 +659,13 @@ class SortVisionNode(Node):
             "pixel_box": [round(box_cx, 1), round(box_cy, 1)],
             "pixel": [round(cx, 1), round(cy, 1)],
             "grasp": None if gp is None else {
-                "ok": gp["ok"], "mode": gp["mode"],
+                "ok": gp["ok"], "mode": gp["mode"], "method": gp["method"],
                 "tight_bbox": gp["tight_bbox"],
                 "fill": round(gp["fill"], 3),
+                "coverage": round(gp["coverage"], 3),
+                "solidity": round(gp["solidity"], 3),
+                "ratio": None if gp["ratio"] is None else
+                         [round(gp["ratio"][0], 3), round(gp["ratio"][1], 3)],
                 "angle": None if gp["angle"] is None else round(gp["angle"], 1),
                 "radius": None if gp["radius"] is None else round(gp["radius"], 1),
                 "reason": gp["reason"],

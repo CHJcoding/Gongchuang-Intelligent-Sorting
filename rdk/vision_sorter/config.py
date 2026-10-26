@@ -151,6 +151,22 @@ GRASP_REFINE = True
 GRASP_POINT_MODE = "centroid"
 GRASP_MASK_MARGIN = 0.12    # 框向外扩的比例，给"框偏小、物料出框"留余量
 GRASP_MIN_FILL = 0.10       # 轮廓面积/框面积 低于此值视为判色可疑，回退框中心
+# 掩膜可信度门槛（不满足就回退框中心，绝不静默下发坏点）
+GRASP_MAX_FILL = 1.60       # 轮廓面积/框面积 高于此值 = 糊到背景上了
+GRASP_MIN_SOLIDITY = 0.72   # 轮廓面积/凸包面积 低于此值 = 掩膜是散点/环形
+# 覆盖率别定太高：三角形/四面体俯视投影本来就只有外接框的一半（实测绿色
+# 三棱柱 0.54，定 0.55 会把它误杀）。防"只切到碎片"靠下面两项。
+GRASP_MIN_COVERAGE = 0.40   # 掩膜/贴合框面积 低于此值 = 贴合框里只有一小块是物体
+GRASP_MAX_CENTER_OFF = 0.35 # 质心离框中心距离/框短边 高于此值 = 掩膜偏到一侧了
+GRASP_RATIO_LO = 0.45       # 贴合框宽(高)/框宽(高) 的合理区间
+GRASP_RATIO_HI = 1.15
+# 自适应收窄：全局颜色区间把背景也框进来时（蓝色最常发生），
+# 用框内像素的中位 HSV 重建一个更窄的窗口，把背景挤出去
+GRASP_ADAPTIVE = True
+GRASP_ACHROMATIC_OTSU = True  # 白/黑物料：白物体 vs 白台面，颜色区间分不开，用明度 Otsu 兜底
+GRASP_H_TOL = 10            # 色相半宽（0~180 制，10 约等于 ±20°）
+GRASP_S_TOL = 70            # 饱和度半宽
+GRASP_V_TOL = 70            # 明度半宽
 SERIAL_SIM = False         # True: 不连下位机，只打印指令（无 STM32 时调试用）
 SCAN_ALL = False           # True: 每秒把所有目标+判色结果打一行 [扫描]（台架联调用，只影响日志）
 

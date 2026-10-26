@@ -13,6 +13,7 @@
 #   3) 重启先 SIGINT 优雅退出，等进程真的没了再动
 #   4) 判活只看"日志是否还在长" —— 节点正常时每秒都在写 fps 行
 #   5) 频繁失败就退避，绝不疯狂重启
+#   6) 单实例锁（flock）—— 两个守护同时跑只会互相杀 launch
 #
 # 用法：
 #   screen -dmS det /root/vision_ws/cam_watchdog.sh
@@ -33,6 +34,18 @@ QUICK_WINDOW=120     # 退避窗口
 MAX_QUICK=4          # 窗口内最多重启几次
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$WD_LOG"; }
+
+# ---- 单实例锁：两个守护同时跑会互相杀对方的 launch ----
+# 实测事故：22:05 手工开了两个 screen(det)，两个 watchdog 各管一条 launch，
+# 对方每轮"清场"就把自己的 launch 杀掉 -> 日志里连续
+# "需要重启：launch 主进程退出（这次跑了 10s）"，越重启越乱。
+LOCK=/var/run/gc_cam_watchdog.lock
+exec 9>"$LOCK"
+if ! flock -n 9; then
+    log "✗ 已有一个 cam_watchdog 在运行（$LOCK 被占用），本实例退出"
+    exit 0
+fi
+echo $$ > /var/run/gc_cam_watchdog.pid
 
 # ---- 设备解析：cam0 不在就扫一遍 /dev/video*，挑能出 MJPG 的那个 ----
 resolve_cam() {

@@ -470,7 +470,7 @@ python tools/gantry_monitor.py --port COM7              # PC 上
 
 ```bash
 python tools/planar_calib.py --self-test          # 合成棋盘：检测→求解→对齐→3锚点→JSON
-python tools/test_protocol.py                     # 协议 + 标定 + 内参质量闸 + 安全闸，119 项
+python tools/test_protocol.py                     # 协议 + 标定 + 内参质量闸 + 安全闸 + 抓取点精修，160 项
 python tools/gantry_monitor.py --simulate         # 坐标帧解析器抗噪
 python tools/collect_anchors.py --simulate        # 锚点采集流程（含坏 CRC/半包）
 python tools/hsv_calib.py --data 标定图片          # HSV 阈值标定（见第九节）
@@ -595,17 +595,34 @@ YOLO 的框天生比实物大一圈（回归误差 + 阴影 + stride 8 网格取
 | `grasp_min_fill` | 0.10 | 框内着色像素占比下限，低于它说明颜色分割不可信 → 回退框中心 |
 | `grasp_min_px` | 60 | 着色像素太少（太远/糊）不精修 |
 | `grasp_margin` | 8 | 框外扩多少像素找轮廓（补 YOLO 框偏小的情况） |
+| `grasp_min_coverage` | 0.40 | 掩膜面积 / **框面积** 下限（原来的 `min_fill` 只除以「扩展后的小图」，框一小就虚高，实测把绿三棱柱误杀过） |
+| `grasp_max_center_off` | 0.35 | 质心距框中心的最大距离（占框短边比例），超了说明掩膜只框到物体的一半 → 回退 |
+| `grasp_adaptive` | True | 粗掩膜铺满整个框（掩膜长宽 ≥ 框的 1.15 倍）时，用框内**中位色**再收窄一次 |
+| `grasp_achromatic_otus` | True | 白/黑物料用**明度 Otsu** 兜底（见下） |
 
 ```bash
 # 临时对比：老行为 vs 新行为，同一盘料各跑一轮
 ros2 run ... 或  python3 sort_vision_node.py --ros-args -p grasp_point_mode:=bbox
 ```
 
+**白/黑物料为什么要 Otsu 兜底**：白色物料的 HSV 是「任意色相 + 低饱和 + 高亮」，
+而白台面/白纸**也是**——颜色区间必然把背景一起框进来，实测白色圆柱的掩膜是"围着
+物体的一圈背景"，实心度只有 0.37，调阈值救不回来。但物体和台面之间总有一条明暗边，
+于是对框内明度做 Otsu 二分，二分后**丢掉连着画面边缘的那一类**（台面连边、物料不连），
+就是物料。这个方法只在颜色掩膜不可信时启用，彩色物料仍走颜色。
+
+**三道闸（宁可回退也别下发错点）**
+1. 掩膜没铺满框（覆盖率 < 0.40）→ 回退
+2. 掩膜不是一坨（实心度 < 0.60）→ 回退（比如只框到边缘一圈）
+3. 质心离框中心太远（> 0.35 短边）→ 回退（掩膜只覆盖了物体半边）
+
 **怎么看效果**
-- 统计行 `抓取点精修=成功/回退`（回退=颜色分割不可信，用了框中心）
-- 日志 `抓取点[精修/质心] 框中心=(x,y) 偏移=Npx`：偏移常年 <1px 说明框本来就准；
-  稳定偏 3~10px 就是模型框真的偏，此时质心更贴。
-- 出现 `回退(颜色不符)` → 颜色判错，或框里混进了别的颜色料/反光。
+- 统计行 `抓取点精修=成功/回退`，日志里带方法和全部指标：
+  `抓取点精修[color_adaptive/centroid] 抓取点=(x,y) 贴合框=(...) 覆盖率=54% 实心=0.91 尺寸=48x46 角度=10° 框中心=(...) 偏移=8.3px`
+- `偏移` 稳定在 5~10px 说明**模型框确实比实物大一圈**（实测绿料均值 7.9px ≈ 2.4mm），
+  此时质心比框中心更贴；质心抖动 ≈ 2.3px 反而小于框中心抖动 3.0px。
+- `回退(框中心) 原因=...` 会写清哪道闸拦的；`tools/refine_diag.py` 可以把现场
+  帧存成 crop/mask 图（`_diag/`），直接看掩膜长什么样。
 - 精修点仍是**像素**，之后才走去畸变 → 单应 → mm，口径没变。
 
 ## 十一、还没闭环的事
@@ -625,5 +642,7 @@ ros2 run ... 或  python3 sort_vision_node.py --ros-args -p grasp_point_mode:=bb
 - [x] 节拍参数命令行覆盖（`grab_cycle_s` / `grab_timeout_s` / `grab_done_mode`）
 - [x] HSV 阈值标定工具（`tools/hsv_calib.py`，照片 → 分位数 → 建议阈值 + 冲突检查）
 - [x] 抓取点改用颜色轮廓质心（`grasp_refine.py`，框中心偏移可观测，可一键退回）
+- [x] 实机验证精修有效性：绿料 50/50 成功，偏移均值 7.9px（≈2.4mm），质心抖动 2.3px < 框中心 3.0px
+- [ ] 白/黑物料的 Otsu 兜底还没在现场白料上实测过（代码 + 合成单测已过）
 - [ ] 实机对比 `grasp_point_mode=bbox` 与 `centroid` 各抓 5 次，确认质心更准
 - [ ] 各颜色实物拍照片跑 `hsv_calib.py`，替换 `COLOR_RANGES_HSV`（等物料打印）

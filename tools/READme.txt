@@ -19,7 +19,7 @@
 │   ├── gantry_monitor.py       # ★ 读 STM32 回传的 0x07 坐标帧（--simulate 可离线测）
 │   ├── hsv_calib.py            # ★ HSV 阈值标定：每种颜色一叠照片 -> 分位数/建议区间/冲突检查
 │   │                           #   --apply 只打印 config 片段；--report x.md 出完整报告
-│   ├── test_protocol.py        # ★ 离线单测：协议 + 标定数学 + 去畸变 + 内参质量闸 + 安全闸（119 项）
+│   ├── test_protocol.py        # ★ 离线单测：协议 + 标定数学 + 去畸变 + 内参质量闸 + 安全闸（160 项）
 │   ├── validate_postprocess.py # 板端解码结果 vs torch 的对照验证
 │   └── test_*.py                # 加载/推理测试脚本
 │
