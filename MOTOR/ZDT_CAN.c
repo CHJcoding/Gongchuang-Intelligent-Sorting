@@ -50,17 +50,25 @@ void USER_CAN1_Init(void)
 {
     if (s_can_initialized != 0U) return;
 
-    /* 只收扩展帧 */
     FDCAN_FilterTypeDef sFilterConfig = {0};
+
+    /* 1. 配置扩展帧全接收 (Filter 0) */
     sFilterConfig.IdType = FDCAN_EXTENDED_ID;
     sFilterConfig.FilterIndex = 0U;
     sFilterConfig.FilterType = FDCAN_FILTER_MASK;
     sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-    sFilterConfig.FilterID1 = 0x00000000U;   /* 全接收 */
+    sFilterConfig.FilterID1 = 0x00000000U;
     sFilterConfig.FilterID2 = 0x00000000U;
+    if (HAL_FDCAN_ConfigFilter(&hfdcan1, &sFilterConfig) != HAL_OK) Error_Handler();
 
-    if (HAL_FDCAN_ConfigFilter(&hfdcan1, &sFilterConfig) != HAL_OK)
-        Error_Handler();
+    /* 2. 配置标准帧全接收 (Filter 0，标准帧和扩展帧索引各自独立) */
+    sFilterConfig.IdType = FDCAN_STANDARD_ID;
+    sFilterConfig.FilterIndex = 0U;
+    sFilterConfig.FilterType = FDCAN_FILTER_MASK;
+    sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+    sFilterConfig.FilterID1 = 0x00000000U;
+    sFilterConfig.FilterID2 = 0x00000000U;
+    if (HAL_FDCAN_ConfigFilter(&hfdcan1, &sFilterConfig) != HAL_OK) Error_Handler();
 
     /* 非匹配帧全部拒绝 */
     if (HAL_FDCAN_ConfigGlobalFilter(&hfdcan1,
@@ -146,11 +154,15 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
         dataLength = CAN_DLCToBytes(rxHeader.DataLength);
         if (dataLength == 0U) continue;
 
-        if (rxHeader.IdType == FDCAN_EXTENDED_ID)
-        {
-            if (s_extRxCb != NULL)
-                s_extRxCb(rxHeader.Identifier, rxData, dataLength);
+        // 关键修改：不管是标准帧还是扩展帧，通通传出去！
+        if (s_extRxCb != NULL) {
+            s_extRxCb(rxHeader.Identifier, rxData, dataLength);
         }
+//        if (rxHeader.IdType == FDCAN_EXTENDED_ID)
+//        {
+//            if (s_extRxCb != NULL)
+//                s_extRxCb(rxHeader.Identifier, rxData, dataLength);
+//        }
         /* 标准帧直接忽略，因为不接达妙 */
     }
 

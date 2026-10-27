@@ -1270,10 +1270,11 @@ ty/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/p
 ortable/RVDS/ARM_CM4F -I../Drivers/CMSIS/RTOS2/Include -I../Middlewares/ST/STM3
 2_USB_Device_Library/Core/Inc -I../Middlewares/ST/STM32_USB_Device_Library/Clas
 s/CDC/Inc -I../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I../Drivers/CMSIS/Inc
-lude -I.\RTE\_elec-control_CJ -ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\
-5.7.0\CMSIS\Core\Include --predefine="__MICROLIB SETA 1" --predefine="__UVISION
-_VERSION SETA 532" --predefine="_RTE_ SETA 1" --predefine="STM32H723xx SETA 1" 
---predefine="_RTE_ SETA 1" --list=startup_stm32h723xx.lst startup_stm32h723xx.s
+lude -I..\OLED -I.\RTE\_elec-control_CJ -ID:\Users\chg\AppData\Local\Arm\Packs\
+ARM\CMSIS\5.7.0\CMSIS\Core\Include --predefine="__MICROLIB SETA 1" --predefine=
+"__UVISION_VERSION SETA 532" --predefine="_RTE_ SETA 1" --predefine="STM32H723x
+x SETA 1" --predefine="_RTE_ SETA 1" --list=startup_stm32h723xx.lst startup_stm
+32h723xx.s
 
 
 

@@ -22,17 +22,19 @@ Dialog DLL:      TCM.DLL V1.46.0.0
  
 <h2>Project:</h2>
 E:\stm32\elec-control_CJ\MDK-ARM\elec-control_CJ.uvprojx
-Project File Date:  10/24/2026
+Project File Date:  10/26/2026
 
 <h2>Output:</h2>
 *** Using Compiler 'V5.06 update 7 (build 960)', folder: 'D:\Keil_v5\ARM\ARMCC\Bin'
 Build target 'elec-control_CJ'
-assembling startup_stm32h723xx.s...
 compiling freertos.c...
+../Core/Src/freertos.c(280): warning:  #177-D: variable "tx_buf"  was declared but never referenced
+      char tx_buf[64];
+../Core/Src/freertos.c: 1 warning, 0 errors
 linking...
-Program Size: Code=47092 RO-data=1660 RW-data=512 ZI-data=27824  
+Program Size: Code=57784 RO-data=8580 RW-data=548 ZI-data=31372  
 FromELF: creating hex file...
-"elec-control_CJ\elec-control_CJ.axf" - 0 Error(s), 0 Warning(s).
+"elec-control_CJ\elec-control_CJ.axf" - 0 Error(s), 1 Warning(s).
 
 <h2>Software Packages used:</h2>
 
@@ -55,7 +57,7 @@ Package Vendor: Keil
 
    * Component: ARM::CMSIS:CORE:5.4.0
       Include file:  CMSIS\Core\Include\tz_context.h
-Build Time Elapsed:  00:00:05
+Build Time Elapsed:  00:00:09
 </pre>
 </body>
 </html>

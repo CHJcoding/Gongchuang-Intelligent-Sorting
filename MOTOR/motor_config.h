@@ -1,6 +1,11 @@
 #ifndef __MOTOR_CONFIG_H__
 #define __MOTOR_CONFIG_H__
 
+
+//手眼标定是否打开
+#define Handeye_calibration 1
+
+
 /* ========== 电机地址 ========== */
 #define A_MOTOR_ADDR    1U
 #define B_MOTOR_ADDR    2U
@@ -17,6 +22,9 @@
 #define MOTOR_MICROSTEP       16U
 /* 电机转一圈需要的脉冲数 = 200 * 16 = 3200 */
 #define MOTOR_PULSES_PER_REV  (MOTOR_FULL_STEPS * MOTOR_MICROSTEP)
+
+/* S_CPOS 反馈单位：编码器位置每转 65536 个计数 */
+#define MOTOR_POSITION_UNITS_PER_REV  65536.0f
 
 /* 驱动器协议速度上限 5000RPM；这里填机械/工艺允许的上限 */
 #define MOTOR_MAX_RPM         3000U

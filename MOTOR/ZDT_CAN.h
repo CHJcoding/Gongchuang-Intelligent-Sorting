@@ -5,6 +5,7 @@
 #include "fdcan.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 typedef void (*CAN_ExtRxCallback_t)(uint32_t id, const uint8_t *data, uint8_t len);
 

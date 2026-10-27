@@ -35,6 +35,12 @@
 #include "motor.h"
 #include "screen.h"
 #include "screen_config.h"
+#include "battery_driver.h"
+
+//#include "ssd1306.h"
+//#include "ssd1306_fonts.h"
+//#include <stdio.h>
+#include "OLED.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,9 +62,10 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define PNEUMATIC_TEST_ENABLE   1U
+#define PNEUMATIC_TEST_ENABLE   0U
 #define CHASSIS_TEST_ENABLE     0U
 #define COMM_TASK_TEST_ENABLE   0U
+#define MOTOR_POSITION_REPORT_ENABLE 1U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -233,24 +240,26 @@ void StartDefaultTask(void *argument)
     WS2812_Blink(0, 0, 255, 100, 200, 800);
 
     Servo_Init();
+    OLED_Init();
+    
+    #if PNEUMATIC_TEST_ENABLE
+      for (uint32_t cycle = 0U; cycle < 10; cycle++)
+      {
+          //Servo_SetPulse(1, 500);  
+          //osDelay(3000U);         
+          Servo_SetPulse(1, 2500);  
+          osDelay(3000U);
 
-#if PNEUMATIC_TEST_ENABLE
-  for (uint32_t cycle = 0U; cycle < 10; cycle++)
-  {
-      //Servo_SetPulse(1, 500);  
-      //osDelay(3000U);         
-      Servo_SetPulse(1, 2500);  
-      osDelay(3000U);
+      }
 
-  }
-
-  Pneumatic_AllOff();
-#endif
+      Pneumatic_AllOff();
+    #endif
 
   /* Test complete. Keep the task idle without changing the outputs. */
   for (;;)
   {
-    osDelay(1000U);
+    OLED_UpdataScreen();
+    osDelay(10U);
   }
   /* USER CODE END StartDefaultTask */
 }
@@ -268,10 +277,12 @@ void CommTask(void *argument)
     USB_RxPacket_t rxPacket;
     comm_vision_t v_data;
 
-
+    char tx_buf[64];
   /* Infinite loop */
   for(;;)
   {
+      
+      
       if(osMessageQueueGet(UsbRxQueueHandle, &rxPacket, NULL, 0) == osOK)
       {
         // 2. 解析协议
@@ -290,18 +301,18 @@ void CommTask(void *argument)
                 }
           }    
           
-#if COMM_TASK_TEST_ENABLE          
-          uint8_t txbuf[128];
-//            int n = snprintf((char*)txbuf, sizeof(txbuf), "ECHO: %.*s\r\n",
-//                             (int)rxPacket.len, rxPacket.buffer);
-            int n = snprintf((char*)txbuf, sizeof(txbuf), 
-                     "Vision -> Shape:%d, Color:%d, X:%d, Y:%d\r\n",
-                     g_vision_Data.M_shape_id, 
-                     g_vision_Data.M_color_id, 
-                     g_vision_Data.M_x, 
-                     g_vision_Data.M_y);
-            CDC_Transmit_HS(txbuf, (uint16_t)n);
-#endif
+    #if COMM_TASK_TEST_ENABLE          
+              uint8_t txbuf[128];
+    //            int n = snprintf((char*)txbuf, sizeof(txbuf), "ECHO: %.*s\r\n",
+    //                             (int)rxPacket.len, rxPacket.buffer);
+                int n = snprintf((char*)txbuf, sizeof(txbuf), 
+                         "Vision -> Shape:%d, Color:%d, X:%d, Y:%d\r\n",
+                         g_vision_Data.M_shape_id, 
+                         g_vision_Data.M_color_id, 
+                         g_vision_Data.M_x, 
+                         g_vision_Data.M_y);
+                CDC_Transmit_HS(txbuf, (uint16_t)n);
+    #endif
             
     osDelay(1);
   }
@@ -321,6 +332,9 @@ void IndicatorTask(void *argument)
     
     comm_vision_t target_pos;
     
+    Chassis_Init();
+    osDelay(1000);
+    
     #if CHASSIS_TEST_ENABLE
         Chassis_Init();
         osDelay(200);
@@ -339,7 +353,7 @@ void IndicatorTask(void *argument)
          * 预期：只有 A 电机转，B 不动
          * 反了：改 A_DIR_SIGN
          */
-        Chassis_MoveTo(10.0f, 0.0f, 100U, 30U);   // A=B=800，两电机同向
+        Chassis_MoveTo(50.0f, 100.0f, 100U, 30U);   // A=B=800，两电机同向
         osDelay(1500U);
 
         /* ---------- 2. 回原点 ---------- */
@@ -348,12 +362,12 @@ void IndicatorTask(void *argument)
       #endif
       
       //1. 阻塞等待运动指令
-      if(osMessageQueueGet(MotionQueueHandle, &target_pos, NULL, osWaitForever) == osOK)
+      if(osMessageQueueGet(MotionQueueHandle, &target_pos, NULL, 100U) == osOK)
       {
           // --- 放置实际电机、舵机动作 ---
           
           //1. 移动到目标位置
-          //Chassis_MoveTo(target_pos.x, target_pos.y, 100U, 30U);
+          //Chassis_MoveTo(target_pos.M_x, target_pos.M_y, 100U, 30U);
           
           //2. 下降 吸盘吸取并且舵机抓取
           // ...
@@ -378,6 +392,14 @@ void IndicatorTask(void *argument)
           osSemaphoreRelease(MotionDoneSemHandle);
       }
       
+      #if MOTOR_POSITION_REPORT_ENABLE
+      
+        Chassis_DisableAll();
+      
+        Chassis_ReportRealPos();
+      #endif
+
+      
     osDelay(1);
   }
   /* USER CODE END IndicatorTask */
@@ -398,6 +420,8 @@ void ScreenTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
+      
+      
       if(osMessageQueueGet(ScreenQueueHandle, &msg, NULL, osWaitForever) == osOK)
       {
             screen_update_vision(msg.row, msg.count);

@@ -27,6 +27,9 @@ elec-control_cj\motor.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_dma_e
 elec-control_cj\motor.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_mdma.h
 elec-control_cj\motor.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_exti.h
 elec-control_cj\motor.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_cortex.h
+elec-control_cj\motor.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_adc.h
+elec-control_cj\motor.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_adc.h
+elec-control_cj\motor.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_adc_ex.h
 elec-control_cj\motor.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_fdcan.h
 elec-control_cj\motor.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_flash.h
 elec-control_cj\motor.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_flash_ex.h
@@ -49,4 +52,16 @@ elec-control_cj\motor.o: ..\MOTOR\Emm_V5.h
 elec-control_cj\motor.o: ..\MOTOR\ZDT_CAN.h
 elec-control_cj\motor.o: ../Core/Inc/fdcan.h
 elec-control_cj\motor.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdbool.h
+elec-control_cj\motor.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdio.h
 elec-control_cj\motor.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h
+elec-control_cj\motor.o: ../USB_DEVICE/App/usbd_cdc_if.h
+elec-control_cj\motor.o: ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc/usbd_cdc.h
+elec-control_cj\motor.o: ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_ioreq.h
+elec-control_cj\motor.o: ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_def.h
+elec-control_cj\motor.o: ../USB_DEVICE/Target/usbd_conf.h
+elec-control_cj\motor.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdlib.h
+elec-control_cj\motor.o: ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_core.h
+elec-control_cj\motor.o: ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_ioreq.h
+elec-control_cj\motor.o: ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_ctlreq.h
+elec-control_cj\motor.o: ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os.h
+elec-control_cj\motor.o: ../Drivers/CMSIS/RTOS2/Include/cmsis_os2.h

@@ -28,6 +28,9 @@ elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_dma_
 elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_mdma.h
 elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_exti.h
 elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_cortex.h
+elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_adc.h
+elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_adc.h
+elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_adc_ex.h
 elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_fdcan.h
 elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_flash.h
 elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_flash_ex.h
@@ -47,3 +50,4 @@ elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h
 elec-control_cj\emm_v5.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h
 elec-control_cj\emm_v5.o: ../Core/Inc/fdcan.h
 elec-control_cj\emm_v5.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdbool.h
+elec-control_cj\emm_v5.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdio.h

@@ -26,6 +26,9 @@ elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_dma_ex
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_mdma.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_exti.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_cortex.h
+elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_adc.h
+elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_adc.h
+elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_adc_ex.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_fdcan.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_flash.h
 elec-control_cj\main.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_flash_ex.h
@@ -51,8 +54,10 @@ elec-control_cj\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/depre
 elec-control_cj\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F/portmacro.h
 elec-control_cj\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrappers.h
 elec-control_cj\main.o: ../Drivers/CMSIS/RTOS2/Include/cmsis_os2.h
+elec-control_cj\main.o: ../Core/Inc/adc.h
 elec-control_cj\main.o: ../Core/Inc/dma.h
 elec-control_cj\main.o: ../Core/Inc/fdcan.h
+elec-control_cj\main.o: ../Core/Inc/i2c.h
 elec-control_cj\main.o: ../Core/Inc/spi.h
 elec-control_cj\main.o: ../Core/Inc/tim.h
 elec-control_cj\main.o: ../Core/Inc/usart.h
@@ -65,3 +70,4 @@ elec-control_cj\main.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h
 elec-control_cj\main.o: ../Core/Inc/gpio.h
 elec-control_cj\main.o: ../MOTOR/ZDT_CAN.h
 elec-control_cj\main.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdbool.h
+elec-control_cj\main.o: ../ADC_POWER/battery_driver.h

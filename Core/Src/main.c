@@ -20,8 +20,10 @@
 #include "main.h"
 #include "FreeRTOS.h"
 #include "cmsis_os2.h"
+#include "adc.h"
 #include "dma.h"
 #include "fdcan.h"
+#include "i2c.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -31,6 +33,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ZDT_CAN.h"
+#include "battery_driver.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -103,6 +106,9 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM12_Init();
   MX_SPI6_Init();
+  MX_ADC1_Init();
+  MX_TIM13_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   
  /* Power_5V_EN = 1 */
@@ -110,9 +116,13 @@ int main(void)
   /* POWER_24V_1 powers the Damiao/tower motor bus. */
   HAL_GPIO_WritePin(POWER_24V_1_GPIO_Port, POWER_24V_1_Pin, GPIO_PIN_SET);
   
-    MX_USB_DEVICE_Init();
-
     USER_CAN1_Init();
+    
+    // ������3��������ؼ��
+    Battery_Init(); 
+    
+    // ������4������ TIM13 �ж� (ǰ�������� CubeMX ������ TIM13)
+    HAL_TIM_Base_Start_IT(&htim13); 
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -220,7 +230,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-
+  
+    // �ж��ǲ������ǵ� TIM6 ������
+    if (htim->Instance == TIM13)
+    {
+        
+        g_battery_voltage = Battery_GetVoltage(); 
+    }
+    
   /* USER CODE END Callback 1 */
 }
 

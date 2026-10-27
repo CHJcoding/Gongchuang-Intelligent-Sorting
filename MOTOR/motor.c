@@ -1,5 +1,14 @@
 #include "motor.h"
 
+#if Handeye_calibration
+/* 存储驱动器反馈的真实脉冲数 */
+volatile int32_t g_real_pulse_A = 0;
+volatile int32_t g_real_pulse_B = 0;
+volatile uint8_t g_real_position_valid_A = 0U;
+volatile uint8_t g_real_position_valid_B = 0U;
+
+#endif
+
 /* ============================================================
  *                        内部数据
  * ============================================================ */
@@ -13,6 +22,35 @@ static const uint8_t s_motor_addr[CHASSIS_MOTOR_COUNT] = {
 /* H7 端维护的当前绝对坐标（mm） */
 static float s_cur_x_mm = 0.0f;
 static float s_cur_y_mm = 0.0f;
+
+
+#if Handeye_calibration
+/* ============================================================ */
+/*                 CAN 反馈解析回调                             */
+/* ============================================================ */
+static void Chassis_CAN_Rx_Callback(uint32_t id, const uint8_t *data, uint8_t len)
+{
+    // CAN 数据：功能码、符号、32位位置(大端)、校验字节
+    if (len >= 7U && data[0] == 0x36U && data[6] == 0x6BU)
+    {
+        uint8_t addr = (uint8_t)(id >> 8U);
+        uint32_t value = ((uint32_t)data[2] << 24U) |
+                         ((uint32_t)data[3] << 16U) |
+                         ((uint32_t)data[4] << 8U)  |
+                         (uint32_t)data[5];
+        int32_t pos = (data[1] != 0U) ? -(int32_t)value : (int32_t)value;
+        
+        if (addr == A_MOTOR_ADDR) {
+            g_real_pulse_A = pos;
+            g_real_position_valid_A = 1U;
+        } else if (addr == B_MOTOR_ADDR) {
+            g_real_pulse_B = pos;
+            g_real_position_valid_B = 1U;
+        }
+    }
+}
+#endif
+
 
 /* ============================================================
  *                        工具函数
@@ -109,6 +147,9 @@ HAL_StatusTypeDef Chassis_SetZeroPositions(void)
 
 HAL_StatusTypeDef Chassis_Init(void)
 {
+    /* 注册 CAN 接收回调 */
+    CAN_RegisterExtRxCallback(Chassis_CAN_Rx_Callback);
+    
     uint8_t i;
 
     /* 1. 使能四个电机 */
@@ -210,3 +251,92 @@ HAL_StatusTypeDef Chassis_MoveTo(float x_mm, float y_mm, uint16_t vel_rpm, uint8
     
 }
 
+
+#if Handeye_calibration
+
+
+/* 获取真实的物理坐标 (基于编码器反馈) */
+void Chassis_GetRealPosition(float *x_mm, float *y_mm)
+{
+    // 1. 还原逻辑脉冲（处理方向极性）
+    float logical_A = (float)g_real_pulse_A * A_DIR_SIGN;
+    float logical_B = (float)g_real_pulse_B * B_DIR_SIGN;
+    
+    // 2. 编码器计数转毫米（每转 65536 计数）
+    float mm_A = logical_A * XY_PULLEY_CIRCUM_MM /
+                 (MOTOR_POSITION_UNITS_PER_REV * XY_GEAR_RATIO);
+    float mm_B = logical_B * XY_PULLEY_CIRCUM_MM /
+                 (MOTOR_POSITION_UNITS_PER_REV * XY_GEAR_RATIO);
+    
+    // 3. CoreXY 正解公式
+    *x_mm = (mm_A + mm_B) / 2.0f;
+    *y_mm = (mm_A - mm_B) / 2.0f;
+}
+
+/**
+ * @brief 单次读取真实坐标并通过 USB 发送
+ * @note 电机使能或失能状态下均可读取
+ */
+void Chassis_ReportRealPos(void)
+{
+    float real_x = 0.0f, real_y = 0.0f;
+    float angle_A = 0.0f, angle_B = 0.0f;
+    uint8_t valid_mask;
+    static char usb_buf[128];
+    int len = 0;
+    
+    g_real_position_valid_A = 0U;
+    g_real_position_valid_B = 0U;
+    // 1. 向 A/B 电机发送读取实时位置 (S_CPOS) 的 CAN 指令
+    Emm_V5_Read_Sys_Params(A_MOTOR_ADDR, S_CPOS);
+    Emm_V5_Read_Sys_Params(B_MOTOR_ADDR, S_CPOS);
+    
+    // 2. 给 CAN 总线时间回传数据 (根据波特率给 10~20ms)
+    osDelay(20U);
+    
+    // 3. 计算真实坐标
+    Chassis_GetRealPosition(&real_x, &real_y);
+    angle_A = (float)g_real_pulse_A * 360.0f / MOTOR_POSITION_UNITS_PER_REV;
+    angle_B = (float)g_real_pulse_B * 360.0f / MOTOR_POSITION_UNITS_PER_REV;
+    valid_mask = (uint8_t)((g_real_position_valid_A != 0U ? 1U : 0U) |
+                          (g_real_position_valid_B != 0U ? 2U : 0U));
+    
+    // 4. 通过 USB 发送出来
+    len = snprintf(usb_buf, sizeof(usb_buf),
+                   "POS A:%d B:%d X:%.2f Y:%.2f Adeg:%.2f Bdeg:%.2f valid:%u\r\n",
+                   -(int)g_real_pulse_A, -(int)g_real_pulse_B,
+                   real_x, real_y, angle_A, angle_B, (unsigned int)valid_mask);
+    
+    if (len > 0) {
+        // 非阻塞发送；USB 忙时丢弃本帧，避免卡住电机任务
+        (void)CDC_Transmit_HS((uint8_t*)usb_buf, (uint16_t)len);
+    }
+}
+
+
+/**
+ * @brief 完整的失能手推测试任务 (带死循环)
+ * @note 直接把这个函数的内容放进你的 IndicatorTask 即可
+ */
+void Chassis_ManualMove_TestTask(void)
+{
+    // 1. 初始化后立刻失能，方便手推
+    osDelay(1000); 
+    Chassis_DisableAll();
+    
+    // 向串口/USB发个提示
+    static const char ready_msg[] = "Motor Disabled. Ready for manual move.\r\n";
+    CDC_Transmit_HS((uint8_t*)ready_msg, (uint16_t)(sizeof(ready_msg) - 1U));
+    
+    for(;;)
+    {
+        // 调用单次读取打印函数
+        Chassis_ReportRealPos();
+        
+        // 控制刷新率，10Hz 左右，既能看清手推轨迹，又不会刷屏太快
+        osDelay(100); 
+    }
+}
+
+
+#endif

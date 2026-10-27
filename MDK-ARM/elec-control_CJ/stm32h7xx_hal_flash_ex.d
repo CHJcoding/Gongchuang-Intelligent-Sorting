@@ -25,6 +25,9 @@ elec-control_cj\stm32h7xx_hal_flash_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/st
 elec-control_cj\stm32h7xx_hal_flash_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_mdma.h
 elec-control_cj\stm32h7xx_hal_flash_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_exti.h
 elec-control_cj\stm32h7xx_hal_flash_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_cortex.h
+elec-control_cj\stm32h7xx_hal_flash_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_adc.h
+elec-control_cj\stm32h7xx_hal_flash_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_adc.h
+elec-control_cj\stm32h7xx_hal_flash_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_adc_ex.h
 elec-control_cj\stm32h7xx_hal_flash_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_fdcan.h
 elec-control_cj\stm32h7xx_hal_flash_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_flash.h
 elec-control_cj\stm32h7xx_hal_flash_ex.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_flash_ex.h

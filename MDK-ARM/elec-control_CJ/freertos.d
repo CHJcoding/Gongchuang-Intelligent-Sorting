@@ -35,6 +35,9 @@ elec-control_cj\freertos.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_dm
 elec-control_cj\freertos.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_mdma.h
 elec-control_cj\freertos.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_exti.h
 elec-control_cj\freertos.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_cortex.h
+elec-control_cj\freertos.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_adc.h
+elec-control_cj\freertos.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_adc.h
+elec-control_cj\freertos.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_adc_ex.h
 elec-control_cj\freertos.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_fdcan.h
 elec-control_cj\freertos.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_flash.h
 elec-control_cj\freertos.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_flash_ex.h
@@ -82,3 +85,8 @@ elec-control_cj\freertos.o: ../SCREEN/screen.h
 elec-control_cj\freertos.o: ../Core/Inc/usart.h
 elec-control_cj\freertos.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdarg.h
 elec-control_cj\freertos.o: ../SCREEN/screen_config.h
+elec-control_cj\freertos.o: ../ADC_POWER/battery_driver.h
+elec-control_cj\freertos.o: ..\OLED\OLED.h
+elec-control_cj\freertos.o: ..\OLED\ssd1306.h
+elec-control_cj\freertos.o: ..\OLED\ssd1306_conf.h
+elec-control_cj\freertos.o: ..\OLED\ssd1306_fonts.h
