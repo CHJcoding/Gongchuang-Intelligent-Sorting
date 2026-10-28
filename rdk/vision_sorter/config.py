@@ -59,6 +59,42 @@ SHAPE_IDS = {
 # 模型里没有、但 32 的表里有的形状（识别不到就会把它们判成别的类，需谨慎）
 SHAPE_IDS_MISSING = {0: "长方体", 5: "正方体", 8: "六棱柱"}
 
+
+# ============ 32 侧接收口径（权威表，2026-10-28 用户给定）============
+# 这张表是"STM32 收到什么就是什么"的唯一口径来源：形状号 -> 中文名。
+# 空字符串 = 该号现场没有、32 侧应忽略（2 号球：20~29 整段不用）。
+# 代码里凡是需要"形状号 -> 名字"的地方都查这张表，避免注释和代码两套口径漂移。
+MATERIAL_SHAPE_TABLE = {
+    0: "长方体",
+    1: "镂空正方体",
+    2: "",              # 预留：现场没有球，20~29 不使用
+    3: "三棱柱",
+    4: "圆锥",
+    5: "正方体",
+    6: "圆柱",
+    7: "五棱柱",
+    8: "六棱柱",
+    9: "三棱锥",
+}
+# 形状号 -> 名字（预留位返回 None，方便调用方决定怎么打日志）
+def shape_cn(shape_id):
+    """把一个 32 形状号翻成中文；预留位/非法值返回 None。"""
+    try:
+        name = MATERIAL_SHAPE_TABLE.get(int(shape_id))
+    except (TypeError, ValueError):
+        return None
+    return name or None
+
+
+# 自检：SHAPE_IDS 只能映射到表里存在的形状号，且不能落到预留位以外的地方；
+# 现有模型能吐的形状号集合与"表里有但模型没有"的集合必须互补不重叠。
+_SHAPE_IDS_USED = set(SHAPE_IDS.values())
+assert _SHAPE_IDS_USED <= set(MATERIAL_SHAPE_TABLE), \
+    "SHAPE_IDS 出现了表里没有的形状号: %s" % (_SHAPE_IDS_USED - set(MATERIAL_SHAPE_TABLE))
+assert set(SHAPE_IDS_MISSING) == {
+    sid for sid, n in MATERIAL_SHAPE_TABLE.items() if n and sid not in _SHAPE_IDS_USED
+}, "SHAPE_IDS_MISSING 与 MATERIAL_SHAPE_TABLE 不一致"
+
 # ============ HSV 颜色阈值 ============
 # 用 color_tuner.py 在现场补光下调好后填这里。
 # (lower_HSV, upper_HSV), H:0-179, S:0-255, V:0-255

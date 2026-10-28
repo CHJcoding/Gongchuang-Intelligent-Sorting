@@ -751,6 +751,13 @@ class SortVisionNode(Node):
                C.SHAPE_NAMES_CN.get(shape, shape), shape_id,
                C.COLOR_NAMES_CN.get(color, color), color_id,
                int(round(x_mm)), int(round(y_mm)), b[8], b[9], cycle_s))
+        # 形状号落到 32 侧的空号（2 球：20~29 不用）时提醒一句 ——
+        # 这说明模型把一个没有类别的形状判成了"半球"，32 收到会忽略整帧物料号。
+        if isinstance(shape_id, int) and 0 <= shape_id <= 9 \
+                and C.shape_cn(shape_id) is None:
+            self.get_logger().warn(
+                "⚠ 形状号 %d 是 32 侧的预留位（现场无此形状，20~29 段不用）；"
+                "本轮下发会被 32 忽略" % shape_id)
 
     # ---------------- 标定热加载 ----------------
     def on_reload_calib(self, request, response):

@@ -1217,6 +1217,48 @@ def test_pos_text():
           and collect_anchors._parse_xy_line("1 2 3") is None)
 
 
+def test_material_shape_table():
+    """32 侧接收口径（权威表）：形状号 -> 中文名，2 号预留。"""
+    import config as C
+    T = C.MATERIAL_SHAPE_TABLE
+    check("表覆盖 0~9 全部十个形状号", set(T) == set(range(10)), str(sorted(T)))
+    check("形状号 2 是预留位（空名）", T.get(2) == "", repr(T.get(2)))
+    check("预留位 shape_cn 返回 None", C.shape_cn(2) is None)
+    check("非法/越界形状号返回 None",
+          C.shape_cn(99) is None and C.shape_cn(None) is None
+          and C.shape_cn("x") is None)
+    want = {0: "长方体", 1: "镂空正方体", 3: "三棱柱", 4: "圆锥",
+            5: "正方体", 6: "圆柱", 7: "五棱柱", 8: "六棱柱", 9: "三棱锥"}
+    got = {k: v for k, v in T.items() if v}
+    check("十个形状名称与用户给定表逐字一致", got == want,
+          str(set(got.items()) ^ set(want.items())))
+    check("shape_cn 能查回中文名",
+          C.shape_cn(4) == "圆锥" and C.shape_cn(9) == "三棱锥")
+    # 模型 7 类 -> 32 形状号：除 BQ(半球) 落在预留位 2 之外，其余都必须能在表里查到
+    bad = [k for k, v in C.SHAPE_IDS.items() if v != 2 and C.shape_cn(v) is None]
+    check("除 BQ 外 SHAPE_IDS 的形状号都能在权威表里查到", not bad, str(bad))
+    check("BQ(半球) 映射到预留位 2", C.SHAPE_IDS.get("BQ") == 2)
+    check("SHAPE_IDS 映射到的中文名与模型类中文名语义一致",
+          C.shape_cn(C.SHAPE_IDS["SLZ"]) == "三棱柱"
+          and C.shape_cn(C.SHAPE_IDS["YZHU"]) == "圆锥"
+          and C.shape_cn(C.SHAPE_IDS["YZ"]) == "圆柱"
+          and C.shape_cn(C.SHAPE_IDS["WLZ"]) == "五棱柱"
+          and C.shape_cn(C.SHAPE_IDS["LK"]) == "镂空正方体"
+          and C.shape_cn(C.SHAPE_IDS["SMT"]) == "三棱锥")
+    check("只有 BQ(半球) 落在预留位 2",
+          [k for k, v in C.SHAPE_IDS.items() if C.shape_cn(v) is None] == ["BQ"])
+    check("模型缺的 3 个形状 = 长方体/正方体/六棱柱",
+          set(C.SHAPE_IDS_MISSING) == {0, 5, 8}, str(C.SHAPE_IDS_MISSING))
+    # 20~29 只会由 BQ(半球) 产生（32 侧应当忽略），其它类绝不落进这一段
+    reserved = set(range(20, 30))
+    others = {sid * 10 + cid for k, sid in C.SHAPE_IDS.items() if k != "BQ"
+              for cid in C.COLOR_IDS.values()}
+    check("除 BQ 外没有物料号落进 20~29 预留段", not (others & reserved),
+          str(sorted(others & reserved)))
+    bq = {C.SHAPE_IDS["BQ"] * 10 + cid for cid in C.COLOR_IDS.values()}
+    check("BQ(半球) 的物料号恰好是 20~29", bq == reserved, str(sorted(bq)))
+
+
 def main():
     print("=" * 70)
     print("离线单测：协议 + 标定链路")
@@ -1225,7 +1267,8 @@ def main():
                test_hand_eye, test_math, test_aligned_residual,
                test_camera_model, test_intrinsic_quality,
                test_safety, test_hsv_calib, test_grasp_refine,
-               test_hold_detector, test_pos_text, test_serial_port):
+               test_hold_detector, test_pos_text, test_serial_port,
+               test_material_shape_table):
         print("\n--- %s ---" % fn.__name__)
         try:
             fn()
