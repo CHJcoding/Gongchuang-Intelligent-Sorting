@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C
 import comm                       # 组帧用（模拟模式要打出真实字节）
 from color_classifier import classify_color
+import annotate
 import grasp_refine
 import hand_eye
 import camera_model
@@ -147,6 +148,8 @@ class SortVisionNode(Node):
         self.stat_edge = 0                 # 目标落在去畸变覆盖区外的次数
         self.stat_refine_ok = 0            # 抓取点精修成功（用轮廓点）次数
         self.stat_refine_fb = 0            # 精修回退到框中心的次数
+        self._ann_t = 0.0                  # 标注图上次写盘时间（限频用）
+        self._ann_n = 0                    # 标注图累计张数
         self.last_reopen_t = 0.0           # 上次尝试重连串口的时刻
 
         # ---- 发布 ----
@@ -217,6 +220,13 @@ class SortVisionNode(Node):
                 % (getattr(C, "POS_FRAME_HEAD", 0x07),
                    getattr(C, "POS_FRAME_LEN", 6),
                    getattr(C, "POS_TOPIC", "/gantry/pos")))
+        if getattr(C, "ANNOTATE_ENABLE", False):
+            self.get_logger().info(
+                "抓取点可视化已开启 | 写图=%s/last.jpg %.0f帧/秒 | "
+                "看图：python3 tools/mjpeg_view.py 然后浏览器打开 "
+                "http://<板子IP>:8001"
+                % (getattr(C, "ANNOTATE_DIR", "/root/vision_ws/preview"),
+                   float(getattr(C, "ANNOTATE_FPS", 6.0))))
 
     # ---------------- 串口 ----------------
     def _init_serial(self):
@@ -448,6 +458,8 @@ class SortVisionNode(Node):
         if self.blank_until and time.time() < self.blank_until:
             self.stat_blank += 1
             return
+        # 可视化：把「贴合旋转框 + 抓取点」画出来写进预览目录（限频，不影响下发）
+        self._maybe_annotate(targets, msg)
         if not targets:
             return
         self.stat_hit += 1
@@ -504,6 +516,48 @@ class SortVisionNode(Node):
             window = self.grab_cycle_s
         self.blank_until = now + window + getattr(C, "BLANK_AFTER_DONE_S", 0.8)
         self._publish_state("GRABBING")
+
+    def _maybe_annotate(self, targets, det_msg):
+        """把「贴合旋转框 + 抓取点」画出来写成 last.jpg（限频 ANNOTATE_FPS）。
+
+        为什么写文件而不是自己开 MJPEG 服务：节点里再塞一个 socket 线程，
+        一旦写坏整个业务节点陪葬。写文件 3 行、失败只丢一张图；
+        由 tools/mjpeg_view.py 在 :8001 把它转成网页，那个进程挂了也不影响分拣。
+        """
+        if not getattr(C, "ANNOTATE_ENABLE", False):
+            return
+        now = time.time()
+        fps = float(getattr(C, "ANNOTATE_FPS", 6.0)) or 6.0
+        if now - self._ann_t < 1.0 / fps:
+            return
+        frame = self._pick_frame(det_msg.header.stamp)
+        if frame is None:
+            return
+        self._ann_t = now
+        H, W = frame.shape[:2]
+        items = []
+        for t in sorted(targets, key=lambda d: -d["conf"]):
+            x1, y1, x2, y2 = t["bbox"]
+            roi = frame[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+            color = None
+            if roi.size:
+                color, _cc = classify_color(roi)
+            gid = None
+            if color:
+                try:
+                    gid = comm.material_id(t["shape"], color)[0]
+                except Exception:
+                    gid = None
+            items.append({"shape": t["shape"], "conf": t["conf"],
+                          "bbox": t["bbox"], "color": color, "gid": gid})
+        try:
+            img = annotate.draw_targets(frame, items)
+            annotate.save_jpeg(os.path.join(C.ANNOTATE_DIR, "last.jpg"), img,
+                               getattr(C, "ANNOTATE_QUALITY", 80))
+            self._ann_n += 1
+        except Exception as e:                 # 写图失败绝不能影响分拣
+            if self._ann_n < 3:
+                self.get_logger().warn("标注图写入失败: %s" % e)
 
     def _log_scan(self, targets, det_msg):
         """把这一帧的识别结果打出来（形状/颜色/像素/毫米），带两点稳定化：

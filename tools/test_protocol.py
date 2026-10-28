@@ -1263,6 +1263,160 @@ def test_material_shape_table():
           {20 + cid for cid in C.COLOR_IDS.values()} <= used)
 
 
+def _solid_frame(w=640, h=480, bg=(40, 40, 40)):
+    import numpy as np
+    f = np.zeros((h, w, 3), np.uint8)
+    f[:, :] = bg
+    return f
+
+
+def _count(img, pred):
+    m = pred(img)
+    return int(m.sum())
+
+
+def _is_yellow(img):        # BGR: 贴合旋转框 (0,215,255)
+    return (img[:, :, 2] >= 195) & (img[:, :, 1] >= 140) & (img[:, :, 0] <= 90)
+
+
+def _is_cyan(img):          # BGR: 抓取点 (255,255,0)
+    return (img[:, :, 0] >= 195) & (img[:, :, 1] >= 195) & (img[:, :, 2] <= 90)
+
+
+def _is_red(img):           # BGR: 回退虚线 (0,0,255)
+    return (img[:, :, 2] >= 195) & (img[:, :, 1] <= 90) & (img[:, :, 0] <= 90)
+
+
+def _step(name, fn):
+    """跑一个断言小步骤，异常不中断整组测试。"""
+    try:
+        fn()
+        check(name, True)
+    except AssertionError as e:
+        check(name, False, str(e))
+    except Exception as e:
+        check(name, False, "%s: %s" % (type(e).__name__, e))
+
+
+def test_annotate():
+    """抓取点可视化：贴合旋转框 + 抓取点画得对不对（纯离线合成图）。"""
+    if cv2 is None:
+        print("skip (no cv2)")
+        return
+    import annotate
+    import grasp_refine
+
+    # --- 1) 配置项 ---
+    def _cfg_ok():
+        for name, kind in (("ANNOTATE_ENABLE", bool), ("ANNOTATE_DIR", str),
+                           ("ANNOTATE_FPS", (int, float)),
+                           ("ANNOTATE_QUALITY", int),
+                           ("ANNOTATE_VERBOSE", bool)):
+            assert hasattr(C, name), "config 缺 %s" % name
+            assert isinstance(getattr(C, name), kind), "config.%s 类型不对" % name
+        assert 1 <= C.ANNOTATE_FPS <= 30, C.ANNOTATE_FPS
+    _step("可视化：config 含 5 个参数且取值合理", _cfg_ok)
+
+    # 合成图：纯绿方块（模拟一块绿料）
+    frame = _solid_frame()
+    cv2.rectangle(frame, (200, 150), (280, 230), (0, 180, 0), -1)
+    target = [{"shape": "SLZ", "conf": 0.91, "bbox": [195, 145, 285, 235],
+               "color": "green", "gid": 33}]
+    box = {}
+    box["out"] = annotate.draw_targets(frame, target)
+
+    def _draw_ok():
+        out = box["out"]
+        assert out.shape == frame.shape and out is not frame, "应是新图"
+        assert _count(out, _is_yellow) > 120, \
+            "黄色旋转框像素太少 %d" % _count(out, _is_yellow)
+        assert _count(out, _is_cyan) > 30, \
+            "青色抓取点像素太少 %d" % _count(out, _is_cyan)
+    _step("可视化：正常目标画出黄旋转框 + 青抓取点", _draw_ok)
+
+    def _no_touch():
+        assert _count(frame, _is_yellow) == 0, "画到原图上了（必须 copy）"
+        assert _count(frame, _is_cyan) == 0
+    _step("可视化：不改动传入的原图", _no_touch)
+
+    def _point_ok():
+        out = box["out"]
+        gp = grasp_refine.refine(frame, [195, 145, 285, 235], "green")
+        assert gp["ok"], gp["reason"]
+        ys, xs = np.nonzero(_is_cyan(out))
+        px, py = xs.mean(), ys.mean()
+        d = ((px - gp["point"][0]) ** 2 + (py - gp["point"][1]) ** 2) ** 0.5
+        assert d < 3.0, "青点(%.1f,%.1f) vs refine(%.1f,%.1f) 差 %.1fpx" % (
+            px, py, gp["point"][0], gp["point"][1], d)
+    _step("可视化：青点位置 == grasp_refine 抓取点(<3px)", _point_ok)
+
+    def _boxsize_ok():
+        ys, xs = np.nonzero(_is_yellow(box["out"]))
+        bw, bh = xs.max() - xs.min(), ys.max() - ys.min()
+        assert 70 <= bw <= 115 and 70 <= bh <= 115, "黄框尺寸异常 %dx%d" % (bw, bh)
+    _step("可视化：黄框尺寸贴合(70~115px, 物体81px)", _boxsize_ok)
+
+    # 回退路径：硬把绿块说成蓝色 → 掩膜对不上 → 应画红虚线且不画黄框
+    frame2 = _solid_frame()
+    cv2.rectangle(frame2, (300, 200), (360, 260), (0, 180, 0), -1)
+    bad = [{"shape": "SLZ", "conf": 0.8, "bbox": [300, 200, 360, 260],
+            "color": "blue", "gid": 35}]
+    out2 = annotate.draw_targets(frame2, bad)
+    gp2 = grasp_refine.refine(frame2, [300, 200, 360, 260], "blue")
+
+    def _fallback_ok():
+        if gp2["ok"]:                      # 颜色区间把绿当蓝也算合理
+            assert _count(out2, _is_yellow) > 100
+            return
+        assert _count(out2, _is_red) > 60, "回退没画红虚线"
+        assert _count(out2, _is_yellow) == 0, "回退时不该画黄框"
+    _step("可视化：掩膜不可信时画红虚线且不画黄框", _fallback_ok)
+
+    def _empty_ok():
+        out3 = annotate.draw_targets(frame, [])
+        assert out3.shape == frame.shape and (out3 == frame).all()
+    _step("可视化：空目标原样返回", _empty_ok)
+
+    def _inplace_ok():
+        f4 = frame.copy()
+        out4 = annotate.draw_targets(f4, target, copy=False)
+        assert out4 is f4 and _count(f4, _is_yellow) > 120
+    _step("可视化：copy=False 原地绘制", _inplace_ok)
+
+    def _edge_ok():
+        for by1 in (0, 2, 400):
+            f5 = _solid_frame()
+            cv2.rectangle(f5, (100, by1), (180, by1 + 70), (0, 180, 0), -1)
+            t5 = [{"shape": "SLZ", "conf": 0.9, "bbox": [100, by1, 180, by1 + 70],
+                   "color": "green", "gid": 33}]
+            o5 = annotate.draw_targets(f5, t5)
+            assert o5.shape == f5.shape
+    _step("可视化：贴顶/贴底目标文字不越界", _edge_ok)
+
+    tmpd = tempfile.mkdtemp(prefix="ann_")
+    path = os.path.join(tmpd, "sub", "last.jpg")
+
+    def _save_ok():
+        annotate.save_jpeg(path, box["out"], 80)
+        assert os.path.isfile(path), "图没写出来"
+        assert not os.path.exists(path + ".tmp"), "留下 .tmp 临时文件"
+        with open(path, "rb") as f:
+            data = f.read()
+        assert data[:2] == b"\xff\xd8" and data[-2:] == b"\xff\xd9", "不是合法 JPEG"
+        back = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        assert back is not None and back.shape == box["out"].shape
+    _step("可视化：save_jpeg 原子写+可解码+自动建目录", _save_ok)
+
+    def _rewrite_ok():
+        for _ in range(3):
+            annotate.save_jpeg(path, box["out"], 70)
+        assert os.path.getsize(path) > 500
+        assert not os.path.exists(path + ".tmp")
+    _step("可视化：同一文件连写 3 次稳定", _rewrite_ok)
+
+    print("  色约定：黄=贴合旋转框 青=抓取点 红虚线=回退到框中心")
+
+
 def main():
     print("=" * 70)
     print("离线单测：协议 + 标定链路")
@@ -1271,6 +1425,7 @@ def main():
                test_hand_eye, test_math, test_aligned_residual,
                test_camera_model, test_intrinsic_quality,
                test_safety, test_hsv_calib, test_grasp_refine,
+               test_annotate,
                test_hold_detector, test_pos_text, test_serial_port,
                test_material_shape_table):
         print("\n--- %s ---" % fn.__name__)

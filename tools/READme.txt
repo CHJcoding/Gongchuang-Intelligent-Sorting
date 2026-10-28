@@ -20,7 +20,12 @@
 │   │                           #   --raw 原始字节转储：不知道 32 发什么格式时先跑这个
 │   ├── hsv_calib.py            # ★ HSV 阈值标定：每种颜色一叠照片 -> 分位数/建议区间/冲突检查
 │   │                           #   --apply 只打印 config 片段；--report x.md 出完整报告
-│   ├── test_protocol.py        # ★ 离线单测：协议 + 标定数学 + 去畸变 + 内参质量闸 + 安全闸（211 项）
+│   ├── tight_box_demo.py       # ★ 框贴合对比：YOLO 框 vs boundingRect vs minAreaRect
+│   │                           #   --style annotate 用生产代码 annotate.py 画（同板端预览）
+│   ├── refine_diag.py          # ★ 抓取点精修的现场诊断：打覆盖率/实心度/回退原因
+│   ├── mjpeg_view.py           # ★ 抓取点预览网页：把节点写的 last.jpg 转成 :8001 的 MJPEG
+│   │                           #   --selftest 自检；读文件不占相机，挂了不影响分拣
+│   ├── test_protocol.py        # ★ 离线单测：协议 + 标定数学 + 去畸变 + 内参质量闸 + 安全闸（254 项）
 │   ├── validate_postprocess.py # 板端解码结果 vs torch 的对照验证
 │   └── test_*.py                # 加载/推理测试脚本
 │
@@ -45,3 +50,9 @@ C100相机检测预览
 screen -r det      # 看检测节点（Ctrl+A 然后 D 退出，不停止）
 screen -r sort     # 看业务节点
 bash /root/vision_ws/stop_all.sh    # 出问题先无脑清场，再重起
+
+抓取点预览（看真正下发的点在物料哪儿）
+  python3 /root/vision_ws/tools/mjpeg_view.py     # 浏览器 http://<板子IP>:8001
+  黄=贴合旋转框  青=抓取点  绿细框=贴合正框  红虚线=回退(用框中心)
+  图来自业务节点写的 ANNOTATE_DIR/last.jpg（config.ANNOTATE_ENABLE，默认 6 帧/秒）
+  不想看：pkill -f mjpeg_view.py（只停网页，节点照跑）

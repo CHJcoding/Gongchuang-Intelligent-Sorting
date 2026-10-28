@@ -251,6 +251,17 @@ GRASP_V_TOL = 70            # 明度半宽
 SERIAL_SIM = False         # True: 不连下位机，只打印指令（无 STM32 时调试用）
 SCAN_ALL = False           # True: 每秒把所有目标+判色结果打一行 [扫描]（台架联调用，只影响日志）
 
+# ============ 抓取点可视化（2026-10-28 加）============
+# 在预览里画出「贴合旋转框 + 抓取点」，用于现场核对抓取点是否落在物料中心。
+# 实现：节点每 ANNOTATE_FPS 帧写一张 /root/vision_ws/preview/last.jpg，
+#       由 tools/mjpeg_view.py 在 :8001 转成 MJPEG 网页，浏览器直接看。
+# 关掉：ANNOTATE_ENABLE = False（只多写磁盘，不影响下发）
+ANNOTATE_ENABLE = True
+ANNOTATE_DIR = "/root/vision_ws/preview"
+ANNOTATE_FPS = 6.0         # 写图上限（帧/秒）；检测是 30fps，没必要每帧都写
+ANNOTATE_QUALITY = 80      # JPEG 质量
+ANNOTATE_VERBOSE = True    # True: 多画贴合正框(绿细线) + 尺寸/角度/像素数
+
 # ============ 串口 (Linux) ============
 # STM32 走 USB CDC，设备名是 /dev/ttyACM0（不是 CH340 的 /dev/ttyUSB0）。
 # 拔插/重启后编号可能变成 ACM1、ACM2，所以给一串候选，

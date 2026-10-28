@@ -26,7 +26,7 @@ C100 USB相机
 
 **关键点**：检测和图像是两条独立话题，必须按时间戳配对同一帧（节点内 20 帧缓存 + 取最近 stamp）。
 
-## 二、板端只需要这 7 个 .py + 4 个 .sh
+## 二、板端只需要这 8 个 .py + 4 个 .sh
 
 | 文件 | 作用 |
 |---|---|
@@ -37,12 +37,14 @@ C100 USB相机
 | `hand_eye.py` | `pixel_to_robot()`；优先读 `hand_eye.json`（标定结果），读不到用占位值并告警 |
 | `safety.py` | 下发前的两道闸：没标定 / 串口掉了 → 拒绝下发（纯逻辑，可离线测） |
 | `camera_model.py` | 去畸变（`undistortPoints`）+ 内参自检；料盘边缘修正 ~14px，必须在像素→毫米之前做 |
+| `annotate.py` | 可视化：画「贴合旋转框 + 抓取点」写 `preview/last.jpg`（纯 cv2，可离线测） |
 | `stop_all.sh` | 无脑清场：screen、launch、相机节点、孤儿 websocket、nginx、端口 8000 |
 | `cam_watchdog.sh` | 检测节点守护（v2）：温和重启、等相机就绪、退避、自动解析相机设备 |
 | `run_det.sh` | 检测 launch 入口（设备号走 `GC_CAM_DEV`，默认 `/dev/cam0`） |
 | `run_sort.sh` | 业务节点入口 |
 
 另需一次性安装 `rdk/udev/60-gc-camera.rules`（把 C100 固定成 `/dev/cam0`），见第三节 2.5。
+看抓取点要额外拷 `tools/mjpeg_view.py`（纯标准库，见第三节 3.5）。
 
 标定产物 `hand_eye.json` **不是代码文件**，由 `tools/planar_calib.py` 生成后
 再传到板端（放 `/root/vision_ws/vision_sorter/hand_eye.json` 或 `/root/vision_ws/hand_eye.json` 都会被自动找到）。
@@ -115,6 +117,45 @@ python3 sort_vision_node.py            # 默认 auto_trigger=true
 ```
 
 预览：`http://<板子IP>:8000`（websocket 在 8080，nginx 代理到 8000）
+
+### 3.5 看抓取点：贴合旋转框 + 抓取点在哪儿（2026-10-28 加）
+
+`:8000` 那个预览是**官方检测节点**的原始画面，只画 YOLO 框。要看我们**真正下发的
+抓取点**落在物料哪儿，用这个：
+
+```bash
+# 板子上（业务节点已按 ANNOTATE_ENABLE=True 在写图，默认每秒 6 张）
+scp tools/mjpeg_view.py root@10.161.15.50:/root/vision_ws/tools/
+ssh root@10.161.15.50
+python3 /root/vision_ws/tools/mjpeg_view.py          # 前台跑也行，screen 里跑也行
+# 浏览器打开 http://10.161.15.50:8001
+```
+
+画的东西（截图/汇报都用这个配色）：
+
+| 颜色 | 含义 |
+|---|---|
+| 🟡 黄框 | **贴合旋转框**：颜色掩膜 → `minAreaRect`，斜放的物料也贴着边 |
+| 🔵 青点 | **抓取点**：真正下发给 STM32 的 (x,y)（默认质心，可切 `rect`/`bbox`） |
+| 🟢 绿细框 | 贴合正框（`boundingRect`，轴对齐），`ANNOTATE_VERBOSE=True` 时才画 |
+| 🔴 红虚线 | **回退**：掩膜不可信（糊到背景/只覆盖半个料），已退回 YOLO 框中心，框上方写着原因 |
+
+为什么分成两个进程：节点里再开 socket 线程，写错一行会把分拣节点带崩；而
+`mjpeg_view.py` 只读文件，挂了不影响分拣。**它不占用相机**（读的是节点写的 jpg）。
+
+```bash
+# 不想看的时候
+pkill -f mjpeg_view.py
+# 彻底关掉写图（省点 CPU/IO）
+# config.py: ANNOTATE_ENABLE = False
+```
+
+想离线先看一眼效果（不占板子、不要相机，用存下来的实拍帧）：
+
+```bash
+python tools/tight_box_demo.py --image _scan/frame.jpg --boxes _scan/boxes.json \
+       --style annotate --out _scan/annotate_style.jpg --scale 2
+```
 
 ## 四、两个「config」别搞混
 
