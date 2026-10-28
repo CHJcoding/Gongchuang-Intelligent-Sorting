@@ -1046,16 +1046,33 @@ def test_serial_port():
     check("候选不含重复项", len(cands) == len(set(cands)), cands)
 
     # --- 存在性判断：给了真实存在的路径就用它 ---
+    # 注意：板端插着 STM32 时 /dev/serial/by-id/* 真的存在，会抢在 preferred 前面，
+    # 所以这里把 os.path.exists 打成"只认这个假路径"，保证测试与硬件无关。
     tmp = tempfile.mkdtemp(prefix="port_test_")
     fake = os.path.join(tmp, "ttyACM0")
     with open(fake, "w", encoding="utf-8") as f:
         f.write("")
-    check("resolve 优先返回已存在的 preferred",
-          comm.resolve_serial_port(fake) == fake, comm.resolve_serial_port(fake))
+    real_exists = os.path.exists
+    try:
+        os.path.exists = lambda p: os.path.abspath(str(p)) == os.path.abspath(fake)
+        got = comm.resolve_serial_port(fake)
+    finally:
+        os.path.exists = real_exists
+    check("resolve 优先返回已存在的 preferred", got == fake, got)
 
     # --- 全都不存在时返回首选名字（不能返回空串，否则报错信息看不懂）---
+    # 候选表也要打桩：板端 /dev/serial/by-id/* 是真实存在的目录项，
+    # 会通过 listdir 混进候选（os.path.exists 打桩挡不住 listdir），
+    # 于是最后返回的会是 by-id 路径而不是 preferred。
     missing = os.path.join(tmp, "nope_device")
-    got = comm.resolve_serial_port(missing)
+    real_cands = comm.serial_port_candidates
+    try:
+        os.path.exists = lambda p: False
+        comm.serial_port_candidates = lambda preferred=None: [missing]
+        got = comm.resolve_serial_port(missing)
+    finally:
+        os.path.exists = real_exists
+        comm.serial_port_candidates = real_cands
     check("全不存在时返回首选名字而不是空串", got == missing, got)
 
     # --- 文本 OK 也算抓取完成 ---
@@ -1106,6 +1123,100 @@ def test_serial_port():
         C.GRAB_DONE_ACCEPT_ASCII = old
 
 
+# ============== 14. 文本坐标帧（现场固件实测格式，2026-10-28 抓包）==============
+POS_TEXT_SAMPLE = (
+    b"POS A:655279 B:3 X:-199.98 Y:-199.97 "
+    b"Adeg:-3599.56 Bdeg:-0.02 valid:3\r\n"
+)
+
+
+def test_pos_text():
+    # 1) 整行一次到齐
+    c = comm.Comm()
+    c._rx = bytearray(POS_TEXT_SAMPLE)
+    c._parse_rx()
+    check("文本坐标帧：X/Y 解析为浮点",
+          c.latest_position_f == (-199.98, -199.97), c.latest_position_f)
+    check("文本坐标帧：valid=3 被记录", c.pos_valid == 3, c.pos_valid)
+    check("文本坐标帧：整数版四舍五入",
+          c.latest_position == (-200, -200), c.latest_position)
+    check("文本坐标帧：有效帧计数 +1", c.pos_text_frames == 1, c.pos_text_frames)
+    check("文本坐标帧：附送编码器/角度",
+          (c.latest_pos_text or {}).get("a") == 655279
+          and abs((c.latest_pos_text or {}).get("adeg", 0) + 3599.56) < 1e-6,
+          c.latest_pos_text)
+
+    # 2) 分片到达（模拟串口每次只读到 7 字节）也不能丢
+    c = comm.Comm()
+    for i in range(0, len(POS_TEXT_SAMPLE), 7):
+        c._rx.extend(POS_TEXT_SAMPLE[i:i + 7])
+        c._parse_rx()
+    check("文本坐标帧：分片到达仍能解析",
+          c.latest_position_f == (-199.98, -199.97), c.latest_position_f)
+
+    # 3) valid:0（刚上电没归零）必须丢弃，绝不能当成 (0,0) 真值
+    c = comm.Comm()
+    c._rx = bytearray(
+        b"POS A:0 B:0 X:0.00 Y:0.00 Adeg:0.00 Bdeg:0.00 valid:0\r\n")
+    c._parse_rx()
+    check("valid=0 不更新坐标（避免把 0,0 当真值）",
+          c.latest_position_f is None and c.latest_position is None,
+          (c.latest_position_f, c.latest_position))
+    check("valid=0 计入无效帧",
+          c.pos_text_invalid == 1 and c.pos_valid == 0, c.pos_text_invalid)
+
+    # 3b) 现场实测的"假有效"帧：valid:3 但坐标和编码器全 0（没回零）
+    c = comm.Comm()
+    c._rx = bytearray(
+        b"POS A:0 B:0 X:0.00 Y:0.00 Adeg:0.00 Bdeg:0.00 valid:3\r\n")
+    c._parse_rx()
+    check("valid:3 但全 0 的假有效帧被挡住",
+          c.latest_position_f is None and c.pos_text_invalid == 1
+          and c.pos_valid == 0,
+          (c.latest_position_f, c.pos_text_invalid, c.pos_valid))
+
+    # 4) 文本帧 + 文本 OK + 二进制 0x07 三种包混流
+    c = comm.Comm()
+    c._rx = bytearray(POS_TEXT_SAMPLE + b"OK\r\n"
+                      + comm.build_pos_frame(-12, 407))
+    c._parse_rx()
+    check("文本帧与 OK 混流：完成信号正确", c.poll_done() is True)
+    check("文本帧与 OK 混流：最后一次坐标来自二进制帧",
+          c.latest_position_f == (-12.0, 407.0), c.latest_position_f)
+
+    # 5) 噪声里夹一行合法文本
+    c = comm.Comm()
+    c._rx = bytearray(b"\x00\xff\x13garbage" + POS_TEXT_SAMPLE + b"\x99")
+    c._parse_rx()
+    check("噪声中夹的文本帧仍能解析",
+          c.latest_position_f == (-199.98, -199.97), c.latest_position_f)
+
+    # 6) collect_anchors.PosReader 认同一份字节（手眼标定走这条路）
+    r = collect_anchors.PosReader()
+    for i in range(0, len(POS_TEXT_SAMPLE), 5):
+        r.feed(POS_TEXT_SAMPLE[i:i + 5])
+    check("PosReader 解析文本帧",
+          r.last == (-199.98, -199.97) and r.total == 1, (r.last, r.total))
+    r2 = collect_anchors.PosReader()
+    r2.feed(b"POS A:0 B:0 X:0.00 Y:0.00 valid:0\r\n")
+    check("PosReader 丢弃 valid=0",
+          r2.last is None and r2.invalid == 1, (r2.last, r2.invalid))
+    r3 = collect_anchors.PosReader()
+    r3.feed(collect_anchors.encode_pos(-12, 407))
+    check("PosReader 仍兼容二进制 0x07", r3.last == (-12.0, 407.0), r3.last)
+
+    # 7) 手工录坐标（回传不稳定时的兜底路径）
+    check("手工坐标：空格分隔",
+          collect_anchors._parse_xy_line("-120.5 33") == (-120.5, 33.0))
+    check("手工坐标：逗号分隔",
+          collect_anchors._parse_xy_line("12.5,-30.25") == (12.5, -30.25))
+    check("手工坐标：中文逗号 + 多余空格",
+          collect_anchors._parse_xy_line("  7，8.5 ") == (7.0, 8.5))
+    check("手工坐标：非法输入返回 None",
+          collect_anchors._parse_xy_line("abc") is None
+          and collect_anchors._parse_xy_line("1 2 3") is None)
+
+
 def main():
     print("=" * 70)
     print("离线单测：协议 + 标定链路")
@@ -1114,7 +1225,7 @@ def main():
                test_hand_eye, test_math, test_aligned_residual,
                test_camera_model, test_intrinsic_quality,
                test_safety, test_hsv_calib, test_grasp_refine,
-               test_hold_detector, test_serial_port):
+               test_hold_detector, test_pos_text, test_serial_port):
         print("\n--- %s ---" % fn.__name__)
         try:
             fn()

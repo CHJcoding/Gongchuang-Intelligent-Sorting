@@ -354,12 +354,19 @@ class SortVisionNode(Node):
         if not getattr(C, "POS_ENABLE", False) or self.comm is None:
             return
         try:
-            pos = self.comm.poll_position()
+            pos = self.comm.poll_position_f()
         except Exception:
             return
         if pos is None or self.pub_pos is None:
             return
-        payload = {"x": pos[0], "y": pos[1], "seq": self.comm.position_seq}
+        info = getattr(self.comm, "latest_pos_text", None) or {}
+        payload = {"x": pos[0], "y": pos[1],
+                   "valid": getattr(self.comm, "pos_valid", None),
+                   "seq": self.comm.position_seq}
+        if info.get("adeg") is not None:
+            payload["adeg"] = info.get("adeg")
+        if info.get("bdeg") is not None:
+            payload["bdeg"] = info.get("bdeg")
         self.pub_pos.publish(String(data=json.dumps(payload,
                                                    ensure_ascii=False)))
 

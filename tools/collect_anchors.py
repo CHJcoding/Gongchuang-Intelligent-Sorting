@@ -35,6 +35,7 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -80,6 +81,16 @@ def _default_port():
 POS_HEAD = int(_cfg("POS_FRAME_HEAD", 0x07))
 POS_LEN = int(_cfg("POS_FRAME_LEN", 6))
 
+# 文本坐标帧（现场固件实测格式，2026-10-28）：
+#   b"POS A:655279 B:3 X:-199.98 Y:-199.97 Adeg:-3599.56 Bdeg:-0.02 valid:3\r\n"
+_TXT_X = re.compile(r"\bX:(-?\d+(?:\.\d+)?)")
+_TXT_Y = re.compile(r"\bY:(-?\d+(?:\.\d+)?)")
+_TXT_VALID = re.compile(r"\bvalid:(-?\d+)")
+_TXT_A = re.compile(r"\bA:(-?\d+)")
+_TXT_B = re.compile(r"\bB:(-?\d+)")
+_TXT_ADEG = re.compile(r"\bAdeg:(-?\d+(?:\.\d+)?)")
+_TXT_BDEG = re.compile(r"\bBdeg:(-?\d+(?:\.\d+)?)")
+
 
 def crc8(data):
     """CRC-8/SMBUS，poly 0x07，init 0x00（与 comm._crc8 一致）。"""
@@ -102,26 +113,92 @@ def encode_pos(x_mm, y_mm):
 
 
 class PosReader:
-    """流式读 0x07 坐标帧，只保留最新一帧（丢帧无所谓）。"""
+    """流式读坐标帧，只保留最新一帧（丢帧无所谓）。
+
+    同时支持两种格式（现场固件两种都可能出现）：
+      1) 文本行（2026-10-28 现场实测，当前固件就是这个）：
+         b"POS A:655279 B:3 X:-199.98 Y:-199.97 Adeg:-3599.56 Bdeg:-0.02 valid:3\r\n"
+      2) 二进制帧（协议备用格式）：0x07 | x int16 LE | y int16 LE | crc8
+    文本帧里 valid<=0 表示没归零/不可信，此时不更新坐标（否则把 0,0 当真实点）。
+    """
 
     def __init__(self):
         self.buf = bytearray()
         self.bad = 0
         self.total = 0
-        self.last = None
+        self.last = None            # (x_mm, y_mm) 浮点
         self.last_t = 0.0
+        self.last_valid = None      # 固件报的 valid 值
+        self.last_text = None       # 整条文本帧解析结果 dict
+        self.invalid = 0            # valid<=0 被丢弃的条数
+
+    # ---- 文本帧 ----
+    def _consume_text(self, line):
+        text = line.decode("ascii", "replace")
+        mx = _TXT_X.search(text)
+        my = _TXT_Y.search(text)
+        if not mx or not my:
+            self.bad += 1
+            return
+        mv = _TXT_VALID.search(text)
+        valid = int(mv.group(1)) if mv else 1
+        self.last_valid = valid
+
+        def _num(pat, cast):
+            m = pat.search(text)
+            try:
+                return cast(m.group(1)) if m else None
+            except (TypeError, ValueError):
+                return None
+
+        self.last_text = {
+            "x": float(mx.group(1)), "y": float(my.group(1)), "valid": valid,
+            "a": _num(_TXT_A, int), "b": _num(_TXT_B, int),
+            "adeg": _num(_TXT_ADEG, float), "bdeg": _num(_TXT_BDEG, float),
+        }
+        if valid <= 0:
+            self.invalid += 1
+            return
+        # 刚上电/没回零时固件会发 valid:3 但坐标与编码器全 0（实测），挡住
+        a_val = self.last_text.get("a")
+        b_val = self.last_text.get("b")
+        if (self.last_text["x"] == 0.0 and self.last_text["y"] == 0.0
+                and a_val in (None, 0) and b_val in (None, 0)):
+            self.invalid += 1
+            self.last_valid = 0
+            return
+        self.last = (float(mx.group(1)), float(my.group(1)))
+        self.last_t = time.time()
+        self.total += 1
 
     def feed(self, data):
         self.buf.extend(data)
-        if len(self.buf) > 4096:                     # 防噪声撑爆
-            del self.buf[:-POS_LEN * 4]
+        if len(self.buf) > 8192:                 # 防噪声撑爆（文本行比二进制长）
+            del self.buf[:-1024]
         while True:
-            i = self.buf.find(bytes([POS_HEAD]))
-            if i < 0:
+            it = self.buf.find(b"POS ")
+            ib = self.buf.find(bytes([POS_HEAD]))
+            if it < 0 and ib < 0:
                 self.buf.clear()
                 return
-            if i:
-                del self.buf[:i]
+            if it >= 0 and (ib < 0 or it <= ib):
+                # ---- 文本行 ----
+                nl = self.buf.find(b"\n", it)
+                if nl < 0:
+                    if it:
+                        del self.buf[:it]
+                    if len(self.buf) > 256:      # 没有换行的超长垃圾
+                        self.bad += 1
+                        del self.buf[:1]
+                        continue
+                    return                       # 半行，等后续字节
+                line = bytes(self.buf[it:nl + 1])
+                del self.buf[:nl + 1]
+                self._consume_text(line)
+                continue
+            # ---- 二进制帧 ----
+            if ib:
+                del self.buf[:ib]
             if len(self.buf) < POS_LEN:
                 return
             frame = bytes(self.buf[:POS_LEN])
@@ -133,7 +210,7 @@ class PosReader:
                 del self.buf[:1]                     # 丢 1 字节重同步
                 continue
             if x != -32768 and y != -32768:          # -32768 当"无效"约定
-                self.last = (x, y)
+                self.last = (float(x), float(y))
                 self.last_t = time.time()
                 self.total += 1
             del self.buf[:POS_LEN]
@@ -804,6 +881,49 @@ def _finish(args, anchors):
     return 0
 
 
+def _parse_xy_line(text):
+    """把 "12.5 -30" / "-120.5,33" / "12.5  -30.2" 解析成 (x, y)；不合法返回 None。"""
+    t = (text or "").replace(",", " ").replace("，", " ").strip()
+    parts = t.split()
+    if len(parts) != 2:
+        return None
+    try:
+        return float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+
+
+def run_manual(args):
+    """手工录坐标：STMP32 回传不稳时的兜底路径（坐标从 32 的显示/上位机读）。
+
+    用法：每个位置把夹爪尖对到角点正上方 → 停住 → 直接敲 X Y 两个数。
+    不碰串口，不需要固件支持，采到的 anchors.json 和自动模式完全通用。
+    """
+    corners = [int(c) for c in args.corners]
+    print("=== 手工记录 %d 个锚点：角点 %s ===" % (len(corners), corners))
+    print("每个位置：夹爪尖对到该角点正上方、停住，然后输入 X Y（空格或逗号分隔，q 退出）")
+    anchors = []
+    for k, idx in enumerate(corners):
+        while True:
+            sys.stdout.write("\n[%d/%d] 角点 #%d  坐标 X Y: "
+                             % (k + 1, len(corners), idx))
+            sys.stdout.flush()
+            line = sys.stdin.readline()
+            if not line:                                  # Ctrl-D
+                return _finish(args, anchors)
+            t = line.strip().lower()
+            if t in ("q", "quit", "exit"):
+                return _finish(args, anchors)
+            xy = _parse_xy_line(t)
+            if xy is None:
+                print("  格式不对：要两个数字，例如   -120.5 33.0")
+                continue
+            anchors.append((idx, xy[0], xy[1]))
+            print("  已记录 #%d -> (%.1f, %.1f) mm" % (idx, xy[0], xy[1]))
+            break
+    return _finish(args, anchors)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="采集手眼标定锚点（STM32 回传坐标，不用手抄）；"
@@ -837,12 +957,16 @@ def main(argv=None):
                    help="离线回放坐标记录（每行 t,x,y 或 JSONL），只打印检出的位姿")
 
     ap.add_argument("--simulate", action="store_true", help="离线自测，不连硬件")
+    ap.add_argument("--manual", action="store_true",
+                    help="手工录坐标：不读串口，每个位置敲 X Y（回传不稳定时的兜底）")
     args = ap.parse_args(argv)
 
     if args.simulate:
         return run_simulate()
     if args.replay:
         return run_replay(args)
+    if args.manual:
+        return run_manual(args)
     if args.auto:
         return run_auto(args)
     return run_serial(args)

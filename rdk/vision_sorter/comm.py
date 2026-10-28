@@ -20,7 +20,7 @@
         红0  橙1  黄2  绿3  棕4  蓝5  紫6  品7  黑8  白9
   0 长方体     0    1    2    3    4    5    6    7    8    9
   1 镂空正方体 10   11   12   13   14   15   16   17   18   19
-  2 球        20   21   22   23   24   25   26   27   28   29
+  2 预留(球)  20   21   22   23   24   25   26   27   28   29
   3 三棱柱    30   31   32   33   34   35   36   37   38   39
   4 圆锥      40   41   42   43   44   45   46   47   48   49
   5 正方体    50   51   52   53   54   55   56   57   58   59
@@ -29,6 +29,7 @@
   8 六棱柱    80   81   82   83   84   85   86   87   88   89
   9 三棱锥    90   91   92   93   94   95   96   97   98   99
   例如 11 = 橙色的镂空正方体。(0=长方体/5=正方体/8=六棱柱 我们的模型还没有对应类)
+2026-10-28 用户确认：第 2 行(球)现场没有，20~29 为预留，32 侧收到应忽略。
 
 注：z 轴已按需求移除（STM32 侧自行决定抓取高度），帧长 11 -> 10 字节。
 
@@ -47,6 +48,12 @@
        crc8 覆盖前 5 字节，poly 0x07（与下行同一算法）。
        仅 POS_ENABLE=True 时被节点消费（当前未启用），但解析器始终兼容，
        收到就存进 latest_position，不消费也不会丢其它包。
+  3b) 夹爪坐标 文本（**现场固件实际用的就是这个**，2026-10-28 抓包确认）
+       b"POS A:655279 B:3 X:-199.98 Y:-199.97 Adeg:-3599.56 Bdeg:-0.02 valid:3\r\n"
+       每 0.2s 一帧（5 Hz），以 b"POS " 开头、\r\n 结尾。
+       X/Y 就是夹爪的 mm 坐标（浮点），valid:0 表示还没归零/坐标不可信，此时
+       不更新坐标（否则会把假 0,0 当真实位置）。由 POS_TEXT_ENABLE 控制（默认 True）。
+       顺带把 A/B 编码器计数、Adeg/Bdeg 角度也存进 latest_pos_text 备用。
 
 注意：三种包必须由同一个解析泵处理，否则谁先读谁把别人的字节吃掉。
 本模块所有 poll_* 都走 _pump()，可以任意顺序、任意频率交替调用。
@@ -54,6 +61,7 @@
 另外保留可选的帧级 ACK 逻辑（SEND_WAIT_ACK=True 时启用，默认关闭）。
 """
 import os
+import re
 import struct
 import threading
 import time
@@ -95,6 +103,19 @@ POS_HEAD = int(getattr(C, "POS_FRAME_HEAD", 0x07))
 POS_LEN = int(getattr(C, "POS_FRAME_LEN", 6))
 STATUS_NAMES = dict(getattr(C, "GRAB_STATUS_NAMES", {}))
 RX_BUF_MAX = 512             # 缓冲区上限，防止串口噪声把内存撑爆
+
+# ---- 文本坐标帧（现场固件实际格式，2026-10-28 抓包确认）----
+# b"POS A:655279 B:3 X:-199.98 Y:-199.97 Adeg:-3599.56 Bdeg:-0.02 valid:3\r\n"
+POS_TEXT_PREFIX = b"POS "
+POS_TEXT_ENABLE = bool(getattr(C, "POS_TEXT_ENABLE", True))
+POS_TEXT_MAX_LEN = 200       # 一行最长容忍；超过还没遇到 \n 就当噪声丢掉
+_POS_TXT_X = re.compile(r"\bX:(-?\d+(?:\.\d+)?)")
+_POS_TXT_Y = re.compile(r"\bY:(-?\d+(?:\.\d+)?)")
+_POS_TXT_VALID = re.compile(r"\bvalid:(-?\d+)")
+_POS_TXT_A = re.compile(r"\bA:(-?\d+)")
+_POS_TXT_B = re.compile(r"\bB:(-?\d+)")
+_POS_TXT_ADEG = re.compile(r"\bAdeg:(-?\d+(?:\.\d+)?)")
+_POS_TXT_BDEG = re.compile(r"\bBdeg:(-?\d+(?:\.\d+)?)")
 
 
 def _crc8(data: bytes) -> int:
@@ -193,6 +214,12 @@ class Comm:
         self.latest_position = None       # (x_mm, y_mm)，只保留最新一帧
         self.position_seq = 0             # 累计收到多少帧坐标（调试/丢帧观察）
         self.rx_bad = 0                   # CRC 失败 / 半包丢弃计数
+        # 文本坐标帧（固件实测格式）：浮点坐标 + valid 标志 + 编码器/角度附送信息
+        self.latest_position_f = None     # (x_mm, y_mm) 浮点，保留小数（标定要用）
+        self.pos_valid = None             # 固件报的 valid 值（0=未归零/不可信）
+        self.latest_pos_text = None       # 整条文本帧解析结果 dict
+        self.pos_text_frames = 0          # 收到多少条文本坐标帧（含 valid=0 的）
+        self.pos_text_invalid = 0         # 其中 valid=0 被丢弃的条数
 
     # ---------------- 打开/关闭 ----------------
     def open(self):
@@ -298,6 +325,58 @@ class Comm:
             del self._rx[:-RX_BUF_MAX // 2]
         self._parse_rx()
 
+    def _consume_pos_text(self, line: bytes):
+        """解析一条文本坐标帧 b"POS A:.. B:.. X:.. Y:.. Adeg:.. Bdeg:.. valid:.."。
+
+        valid <= 0 表示固件还没归零 / 坐标不可信，此时**不更新坐标**：
+        否则会把刚上电的 0,0 当真实位置，手眼标定会采到一堆假点。
+        解析成功时坐标存两份：浮点 latest_position_f（标定要用小数），
+        整数 latest_position（老接口 / 日志用）。
+        """
+        self.pos_text_frames += 1
+        text = line.decode("ascii", "replace")
+        mx = _POS_TXT_X.search(text)
+        my = _POS_TXT_Y.search(text)
+        if not mx or not my:
+            self.rx_bad += 1
+            return
+        mv = _POS_TXT_VALID.search(text)
+        valid = int(mv.group(1)) if mv else 1
+        self.pos_valid = valid
+
+        def _num(pat, cast):
+            m = pat.search(text)
+            if not m:
+                return None
+            try:
+                return cast(m.group(1))
+            except (TypeError, ValueError):
+                return None
+
+        x = float(mx.group(1))
+        y = float(my.group(1))
+        self.latest_pos_text = {
+            "x": x, "y": y, "valid": valid,
+            "a": _num(_POS_TXT_A, int), "b": _num(_POS_TXT_B, int),
+            "adeg": _num(_POS_TXT_ADEG, float), "bdeg": _num(_POS_TXT_BDEG, float),
+        }
+        if valid <= 0:
+            self.pos_text_invalid += 1
+            return
+        # 固件刚上电/还没回零时会发 valid:3 但坐标和编码器全 0
+        # （2026-10-28 实测：POS A:0 B:0 X:0.00 Y:0.00 ... valid:3），
+        # 这种"假有效"必须挡住，否则标定会把 (0,0) 当真点采进去。
+        a_val = _num(_POS_TXT_A, int)
+        b_val = _num(_POS_TXT_B, int)
+        if (x == 0.0 and y == 0.0
+                and (a_val in (None, 0)) and (b_val in (None, 0))):
+            self.pos_text_invalid += 1
+            self.pos_valid = 0
+            return
+        self.latest_position_f = (x, y)
+        self.latest_position = (int(round(x)), int(round(y)))
+        self.position_seq += 1
+
     def _parse_rx(self):
         """按 0x06 / 0x07 逐字节扫描，拼出完整包后消费。
 
@@ -310,6 +389,27 @@ class Comm:
 
         while i < n:
             b = buf[i]
+
+            # ---- 夹爪坐标：文本行 "POS A:.. B:.. X:.. Y:.. Adeg:.. Bdeg:.. valid:.." ----
+            # 现场固件实际发的就是这个（0x07 二进制帧是备用格式）。
+            # 'P'=0x50 不会和 0x06 / 0x07 / 'O'(0x4F) 撞车。
+            if POS_TEXT_ENABLE and b == 0x50:
+                if n - i < len(POS_TEXT_PREFIX):
+                    break                               # 前缀还没收全，等下一批
+                if bytes(buf[i:i + len(POS_TEXT_PREFIX)]) == POS_TEXT_PREFIX:
+                    nl = buf.find(b"\n", i)
+                    if nl < 0:
+                        if n - i > POS_TEXT_MAX_LEN:    # 太长没有换行：当噪声
+                            self.rx_bad += 1
+                            i += 1
+                            continue
+                        break                           # 半行，等 \r\n
+                    line = bytes(buf[i:nl + 1])
+                    self._consume_pos_text(line)
+                    i = nl + 1
+                    continue
+                i += 1
+                continue
 
             # ---- 抓取完成：文本 "OK"（STM32 直接 printf("OK") 的情况）----
             # 放在 0x06 之前判断：'O'=0x4F 不会和 0x06/0x07 包头撞车。
@@ -355,6 +455,8 @@ class Comm:
                     x = struct.unpack("<h", body[1:3])[0]
                     y = struct.unpack("<h", body[3:5])[0]
                     self.latest_position = (x, y)
+                    self.latest_position_f = (float(x), float(y))
+                    self.pos_valid = 1
                     self.position_seq += 1
                     i += POS_LEN
                     continue
@@ -391,6 +493,20 @@ class Comm:
         pos = self.latest_position
         self.latest_position = None
         return pos
+
+    def poll_position_f(self):
+        """非阻塞取最新夹爪坐标的**浮点**版本 (x_mm, y_mm)；没有新帧返回 None。
+
+        手眼标定/坐标回算要用这个：整数版四舍五入会丢 0.4mm，几次叠加就吃掉精度。
+        """
+        self._pump()
+        pos = self.latest_position_f
+        self.latest_position_f = None
+        return pos
+
+    def position_alive(self):
+        """串口在用且最近收到过合法坐标帧 → True（判断回传是真通还是假通）。"""
+        return bool(self.position_seq) and self.pos_valid is not None
 
     def drain(self):
         """丢弃输入缓冲里的残留字节（开始新一次抓取前调用）。"""
