@@ -199,9 +199,11 @@ GRAB_DONE_MODE     = "byte"
 | 8 | crc8 | 对字节 0~7，poly 0x07 |
 | 9 | `0x0D` | 帧尾 |
 
-物料编号表（行=形状 0~9，列=颜色 0~9）：`长方体0 / 镂空正方体1 / 三棱柱3 / 圆锥4 /
-正方体5 / 圆柱6 / 五棱柱7 / 六棱柱8 / 三棱锥9`（**2 号预留：现场没有球，20~29 不用**）。
-完整表格见 `rdk/协议说明_串口帧.md` 2.1 节。
+物料编号表（行=形状 0~9，列=颜色 0~9）：`长方体0 / 镂空正方体1 / 球2 / 三棱柱3 / 圆锥4 /
+正方体5 / 圆柱6 / 五棱柱7 / 六棱柱8 / 三棱锥9`，十个形状现场都有实物。
+完整表格见 `rdk/协议说明_串口帧.md` 2.1 节；代码里的唯一口径是
+`config.MATERIAL_SHAPE_TABLE`。
+当前模型只有 7 类，**缺 0 长方体 / 5 正方体 / 8 六棱柱**（等新 YOLO 模型补）。
 
 示例（圆锥/绿，x=-12，y=407）：`AA 55 2B 03 F4 FF 97 01 07 0D`
 （`2B` = 43 = 4×10+3）
@@ -217,6 +219,26 @@ GRAB_DONE_MODE     = "byte"
 > ⚠️ `color_id` 由 `config.py` 的 **`COLOR_IDS`** 显式固定，**不再**跟随 `COLOR_RANGES_HSV` 的
 > 字典顺序。所以增删/重排 HSV 区间**不会**让编号漂移——这是 2026-10-24 删掉 magenta 时
 > 特意解耦的（7 号保留不用，避免 black/white 从 8/9 前移）。改编号只改 `COLOR_IDS`。
+
+#### 换新 YOLO 模型后补齐缺失的 0 / 5 / 8（长方体 / 正方体 / 六棱柱）
+
+十个形状现场都有实物，但当前 7 类模型缺这 3 类。换了新模型（类别覆盖 10 个形状）后
+**只改 `config.py`，五个地方**，改完 import 就会自检：
+
+| 改哪里 | 怎么改 |
+|---|---|
+| `SHAPE_NAMES` | 按新模型 `model.names` 的**顺序**补齐，顺序即 class_id，不能乱 |
+| `SHAPE_NAMES_CN` | 给新类别加中文名 |
+| `SHAPE_IDS` | 新类别 -> 32 形状号（`0=BQ之外的类`…，见上面权威表） |
+| `SHAPE_IDS_MISSING` | 删掉已补齐的号（现在 `{0,5,8}`，补完应为 `{}`） |
+| `YOLO_NUM_CLASSES` | 新模型的类别数（`detector.py` 按它 reshape 输出，不改会报维度错） |
+
+改完立刻有两条 assert 帮你兜底（`config.py` 内）：
+`SHAPE_IDS` 不许指向表外、`SHAPE_IDS_MISSING` 必须与"表里有但模型没有"完全一致。
+再跑 `python3 tools/test_protocol.py`，`test_material_shape_table` 会逐字核对十行口径。
+
+模型文件侧还要同步：重新导出 `.bin`（`YOLO_IMGSZ` 必须等于导出尺寸）、更新
+`/root/vision_ws/yolov5_best_config.json` 的类别名、必要时重定 `YOLO_CONF_THRES`。
 
 ### 上行帧格式（RDK 侧统一解析，三个包可以混流）
 
