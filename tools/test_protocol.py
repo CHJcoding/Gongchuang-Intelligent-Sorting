@@ -28,7 +28,8 @@ _PARENT = os.path.dirname(_HERE)
 # 兼容两种布局：仓库里 tools/ + rdk/vision_sorter/；板端 /root/vision_ws/tools + vision_sorter
 for _p in (os.path.join(_PARENT, "rdk", "vision_sorter"),
            os.path.join(_PARENT, "vision_sorter"),
-           "/root/vision_ws/vision_sorter", _HERE):
+           "/root/vision_ws/vision_sorter", _HERE,
+           os.path.join(_PARENT, "tools"), "/root/vision_ws/tools"):
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -54,33 +55,47 @@ def check(name, cond, detail=""):
 
 # ============================ 1. 下行帧 ============================
 def test_downlink():
-    # 圆锥(YZHU=4 行) + 绿(3 列) => 物料号 43 = 0x2B
-    fr = comm.build_frame("YZHU", "green", -12, 407)
+    # split 口径：圆柱 shape_id=6，绿 color_id=3
+    fr = comm.build_frame("cylinder", "green", -12, 407)
     hexs = " ".join("%02X" % b for b in fr)
     check("下行帧长度=10", len(fr) == 10, hexs)
-    check("下行帧字节完全一致", hexs == "AA 55 2B 03 F4 FF 97 01 07 0D", hexs)
+    check("下行帧字节完全一致", hexs == "AA 55 06 03 F4 FF 97 01 FE 0D", hexs)
     check("CRC 覆盖 0~7 字节", comm._crc8(fr[0:8]) == fr[8])
     check("帧头/帧尾", fr[0] == 0xAA and fr[1] == 0x55 and fr[9] == 0x0D)
+    check("[2]=形状号 cylinder=6", fr[2] == C.SHAPE_IDS["cylinder"], fr[2])
+    check("[3]=颜色号 green=3", fr[3] == C.COLOR_IDS["green"], fr[3])
+
+    # FRAME_ID_MODE 回归：combined 时回退成"形状*10+颜色"
+    _mode = C.FRAME_ID_MODE
+    try:
+        C.FRAME_ID_MODE = "combined"
+        _comb = comm.build_frame("cylinder", "red", 88, 33)
+    finally:
+        C.FRAME_ID_MODE = _mode
+    check("combined 回退 = 物料编号 60", _comb[2] == 60 and _comb[3] == 0,
+          " ".join("%02X" % b for b in _comb))
 
     # 坐标小端
     x = int.from_bytes(fr[4:6], "little", signed=True)
     y = int.from_bytes(fr[6:8], "little", signed=True)
     check("x/y 小端且值正确", (x, y) == (-12, 407), "%s" % ((x, y),))
 
-    # ---- STM32 的 10x10 编号表（2026-10-26 对齐）----
-    fr2 = comm.build_frame("LK", "orange", 10, 20)
-    check("橙色镂空正方体 = 11", fr2[2] == 11 and fr2[3] == 1,
+    # ---- split 口径：两个字节分别是形状号 / 颜色号 ----
+    fr2 = comm.build_frame("hollow_cube", "orange", 10, 20)
+    check("镂空橙 [2]=1 [3]=1", fr2[2] == 1 and fr2[3] == 1,
           " ".join("%02X" % b for b in fr2))
-    check("橙色镂空正方体整帧",
-          " ".join("%02X" % b for b in fr2) == "AA 55 0B 01 0A 00 14 00 9A 0D",
+    check("镂空橙整帧", " ".join("%02X" % b for b in fr2) == "AA 55 01 01 0A 00 14 00 87 0D",
           " ".join("%02X" % b for b in fr2))
-    check("红色镂空正方体 = 10", comm.material_id("LK", "red")[0] == 10)
-    check("圆柱+白 = 69", comm.material_id("YZ", "white")[0] == 69)
-    check("五棱柱+黑 = 78", comm.material_id("WLZ", "black")[0] == 78)
-    check("三棱锥+紫 = 96", comm.material_id("SMT", "purple")[0] == 96)
+    # 物料号（combined 口径，节点日志里仍在用）= 形状*10 + 颜色
+    check("物料号 红色镂空 = 10", comm.material_id("hollow_cube", "red")[0] == 10)
+    check("物料号 圆柱+白 = 69", comm.material_id("cylinder", "white")[0] == 69)
+    check("物料号 五棱柱+黑 = 78",
+          comm.material_id("pentagonal_prism", "black")[0] == 78)
+    check("物料号 三棱锥+紫 = 96",
+          comm.material_id("tetrahedron", "purple")[0] == 96)
     check("形状行号不是 enumerate 顺序",
-          comm.SHAPE_ID["YZHU"] == 4 and comm.SHAPE_ID["YZ"] == 6
-          and comm.SHAPE_ID["SMT"] == 9, str(comm.SHAPE_ID))
+          comm.SHAPE_ID["cone"] == 4 and comm.SHAPE_ID["cylinder"] == 6
+          and comm.SHAPE_ID["tetrahedron"] == 9, str(comm.SHAPE_ID))
     check("形状号与 config.SHAPE_IDS 一致",
           comm.SHAPE_ID == C.SHAPE_IDS, str(comm.SHAPE_ID))
     check("每种形状都有编号（不许漏配）",
@@ -113,15 +128,15 @@ def test_downlink():
           str(set(C.COLOR_RANGES_HSV) - set(C.COLOR_IDS)))
     check("magenta 已删除", "magenta" not in comm.COLOR_ID
           and "magenta" not in C.COLOR_RANGES_HSV)
-    check("未知颜色 -> 编号 255",
-          comm.build_frame("YZHU", "nope", 0, 0)[2] == 255
-          and comm.build_frame("YZHU", "nope", 0, 0)[3] == 255)
+    check("未知颜色 -> [3]=255（形状号照常）",
+          comm.build_frame("cylinder", "nope", 0, 0)[3] == 255
+          and comm.build_frame("cylinder", "nope", 0, 0)[2] == C.SHAPE_IDS["cylinder"])
     check("未知形状 -> 编号 255",
           comm.build_frame("nope", "green", 0, 0)[2] == 255
           and comm.build_frame("nope", "green", 0, 0)[3] == 3)
 
     # int16 越界截断而不是抛异常
-    big = comm.build_frame("YZHU", "green", 99999, -99999)
+    big = comm.build_frame("cylinder", "green", 99999, -99999)
     check("坐标越界截断到 int16",
           int.from_bytes(big[4:6], "little", signed=True) == 32767 and
           int.from_bytes(big[6:8], "little", signed=True) == -32768)
@@ -254,9 +269,17 @@ def test_hand_eye():
             f.write('{"matrix": [[1,2]]}')
         os.environ["GC_HAND_EYE_JSON"] = broken
         hand_eye.reload()
-        check("坏 JSON 不会崩，回退占位值", hand_eye.CALIBRATED is False)
-        check("回退后矩阵等于 config 占位值",
-              np.allclose(hand_eye.MATRIX, np.array(C.HAND_EYE_M)))
+        # 机器上真有一份 /root/vision_ws/hand_eye.json 时，坏 JSON 会被跳过并回退到它，
+        # 所以这里只断言"没崩、没用坏文件、矩阵形状正常"。
+        check("坏 JSON 不会崩，回退可用来源",
+              hand_eye.SOURCE != broken
+              and np.array(hand_eye.MATRIX).shape == (2, 3), hand_eye.SOURCE)
+        check("回退后要么占位值、要么默认路径那份 hand_eye.json",
+              (not hand_eye.CALIBRATED
+               and np.allclose(hand_eye.MATRIX, np.array(C.HAND_EYE_M)))
+              or (hand_eye.CALIBRATED
+                  and os.path.basename(str(hand_eye.SOURCE)) == "hand_eye.json"),
+              hand_eye.SOURCE)
     finally:
         if old_env is None:
             os.environ.pop("GC_HAND_EYE_JSON", None)
@@ -1236,187 +1259,32 @@ def test_material_shape_table():
     check("shape_cn 能查回中文名",
           C.shape_cn(0) == "长方体" and C.shape_cn(4) == "圆锥"
           and C.shape_cn(9) == "三棱锥")
-    # 模型 8 类（1029 v8 版）-> 32 形状号，必须都落在表里
+    # 模型 7 类 -> 32 形状号，必须都落在表里
     bad = [k for k, v in C.SHAPE_IDS.items() if C.shape_cn(v) is None]
     check("SHAPE_IDS 的每个形状号都能在权威表里查到", not bad, str(bad))
     check("SHAPE_IDS 映射到的中文名与模型类中文名语义一致",
-          C.shape_cn(C.SHAPE_IDS["BQ"]) == "球"
-          and C.shape_cn(C.SHAPE_IDS["SLZ"]) == "三棱柱"
-          and C.shape_cn(C.SHAPE_IDS["YZHU"]) == "圆锥"
-          and C.shape_cn(C.SHAPE_IDS["YZ"]) == "圆柱"
-          and C.shape_cn(C.SHAPE_IDS["WLZ"]) == "五棱柱"
-          and C.shape_cn(C.SHAPE_IDS["LK"]) == "镂空正方体"
-          and C.shape_cn(C.SHAPE_IDS["SMT"]) == "三棱锥"
-          and C.shape_cn(C.SHAPE_IDS["CUBE"]) == "正方体")
-    check("模型缺的形状 = 长方体/六棱柱",
+          C.shape_cn(C.SHAPE_IDS["hemisphere"]) == "球"
+          and C.shape_cn(C.SHAPE_IDS["triangular_prism"]) == "三棱柱"
+          and C.shape_cn(C.SHAPE_IDS["cone"]) == "圆锥"
+          and C.shape_cn(C.SHAPE_IDS["cylinder"]) == "圆柱"
+          and C.shape_cn(C.SHAPE_IDS["pentagonal_prism"]) == "五棱柱"
+          and C.shape_cn(C.SHAPE_IDS["hollow_cube"]) == "镂空正方体"
+          and C.shape_cn(C.SHAPE_IDS["cube"]) == "正方体"
+          and C.shape_cn(C.SHAPE_IDS["tetrahedron"]) == "三棱锥")
+    check("模型缺的 2 个形状 = 长方体/六棱柱",
           set(C.SHAPE_IDS_MISSING) == {0, 8}, str(C.SHAPE_IDS_MISSING))
     check("模型能用 + 模型缺的 = 表里全部十个形状号",
           set(C.SHAPE_IDS.values()) | set(C.SHAPE_IDS_MISSING) == set(T),
           str(set(C.SHAPE_IDS.values()) | set(C.SHAPE_IDS_MISSING)))
-    # 物料号自检：编号 = 形状*10 + 颜色，可用形状号覆盖的编号段互不重叠
+    # 物料号自检：编号 = 形状*10 + 颜色，,七个可用形状号覆盖的编号段互不重叠
     used = {sid * 10 + cid for sid in C.SHAPE_IDS.values()
             for cid in C.COLOR_IDS.values()}
-    n_shape = len(C.SHAPE_IDS)
-    check("%d 个形状号 -> %d 个互不重叠的十位段" % (n_shape, n_shape),
-          len(used) == n_shape * len(C.COLOR_IDS)
+    check("形状号 -> 互不重叠的十位段",
+          len(used) == len(C.SHAPE_IDS) * len(C.COLOR_IDS)
           and all(u // 10 in set(C.SHAPE_IDS.values()) for u in used),
           "%d 个编号" % len(used))
     check("球(2) 的物料号是 20~29",
           {20 + cid for cid in C.COLOR_IDS.values()} <= used)
-
-
-def _solid_frame(w=640, h=480, bg=(40, 40, 40)):
-    import numpy as np
-    f = np.zeros((h, w, 3), np.uint8)
-    f[:, :] = bg
-    return f
-
-
-def _count(img, pred):
-    m = pred(img)
-    return int(m.sum())
-
-
-def _is_yellow(img):        # BGR: 贴合旋转框 (0,215,255)
-    return (img[:, :, 2] >= 195) & (img[:, :, 1] >= 140) & (img[:, :, 0] <= 90)
-
-
-def _is_cyan(img):          # BGR: 抓取点 (255,255,0)
-    return (img[:, :, 0] >= 195) & (img[:, :, 1] >= 195) & (img[:, :, 2] <= 90)
-
-
-def _is_red(img):           # BGR: 回退虚线 (0,0,255)
-    return (img[:, :, 2] >= 195) & (img[:, :, 1] <= 90) & (img[:, :, 0] <= 90)
-
-
-def _step(name, fn):
-    """跑一个断言小步骤，异常不中断整组测试。"""
-    try:
-        fn()
-        check(name, True)
-    except AssertionError as e:
-        check(name, False, str(e))
-    except Exception as e:
-        check(name, False, "%s: %s" % (type(e).__name__, e))
-
-
-def test_annotate():
-    """抓取点可视化：贴合旋转框 + 抓取点画得对不对（纯离线合成图）。"""
-    if cv2 is None:
-        print("skip (no cv2)")
-        return
-    import annotate
-    import grasp_refine
-
-    # --- 1) 配置项 ---
-    def _cfg_ok():
-        for name, kind in (("ANNOTATE_ENABLE", bool), ("ANNOTATE_DIR", str),
-                           ("ANNOTATE_FPS", (int, float)),
-                           ("ANNOTATE_QUALITY", int),
-                           ("ANNOTATE_VERBOSE", bool)):
-            assert hasattr(C, name), "config 缺 %s" % name
-            assert isinstance(getattr(C, name), kind), "config.%s 类型不对" % name
-        assert 1 <= C.ANNOTATE_FPS <= 30, C.ANNOTATE_FPS
-    _step("可视化：config 含 5 个参数且取值合理", _cfg_ok)
-
-    # 合成图：纯绿方块（模拟一块绿料）
-    frame = _solid_frame()
-    cv2.rectangle(frame, (200, 150), (280, 230), (0, 180, 0), -1)
-    target = [{"shape": "SLZ", "conf": 0.91, "bbox": [195, 145, 285, 235],
-               "color": "green", "gid": 33}]
-    box = {}
-    box["out"] = annotate.draw_targets(frame, target)
-
-    def _draw_ok():
-        out = box["out"]
-        assert out.shape == frame.shape and out is not frame, "应是新图"
-        assert _count(out, _is_yellow) > 120, \
-            "黄色旋转框像素太少 %d" % _count(out, _is_yellow)
-        assert _count(out, _is_cyan) > 30, \
-            "青色抓取点像素太少 %d" % _count(out, _is_cyan)
-    _step("可视化：正常目标画出黄旋转框 + 青抓取点", _draw_ok)
-
-    def _no_touch():
-        assert _count(frame, _is_yellow) == 0, "画到原图上了（必须 copy）"
-        assert _count(frame, _is_cyan) == 0
-    _step("可视化：不改动传入的原图", _no_touch)
-
-    def _point_ok():
-        out = box["out"]
-        gp = grasp_refine.refine(frame, [195, 145, 285, 235], "green")
-        assert gp["ok"], gp["reason"]
-        ys, xs = np.nonzero(_is_cyan(out))
-        px, py = xs.mean(), ys.mean()
-        d = ((px - gp["point"][0]) ** 2 + (py - gp["point"][1]) ** 2) ** 0.5
-        assert d < 3.0, "青点(%.1f,%.1f) vs refine(%.1f,%.1f) 差 %.1fpx" % (
-            px, py, gp["point"][0], gp["point"][1], d)
-    _step("可视化：青点位置 == grasp_refine 抓取点(<3px)", _point_ok)
-
-    def _boxsize_ok():
-        ys, xs = np.nonzero(_is_yellow(box["out"]))
-        bw, bh = xs.max() - xs.min(), ys.max() - ys.min()
-        assert 70 <= bw <= 115 and 70 <= bh <= 115, "黄框尺寸异常 %dx%d" % (bw, bh)
-    _step("可视化：黄框尺寸贴合(70~115px, 物体81px)", _boxsize_ok)
-
-    # 回退路径：硬把绿块说成蓝色 → 掩膜对不上 → 应画红虚线且不画黄框
-    frame2 = _solid_frame()
-    cv2.rectangle(frame2, (300, 200), (360, 260), (0, 180, 0), -1)
-    bad = [{"shape": "SLZ", "conf": 0.8, "bbox": [300, 200, 360, 260],
-            "color": "blue", "gid": 35}]
-    out2 = annotate.draw_targets(frame2, bad)
-    gp2 = grasp_refine.refine(frame2, [300, 200, 360, 260], "blue")
-
-    def _fallback_ok():
-        if gp2["ok"]:                      # 颜色区间把绿当蓝也算合理
-            assert _count(out2, _is_yellow) > 100
-            return
-        assert _count(out2, _is_red) > 60, "回退没画红虚线"
-        assert _count(out2, _is_yellow) == 0, "回退时不该画黄框"
-    _step("可视化：掩膜不可信时画红虚线且不画黄框", _fallback_ok)
-
-    def _empty_ok():
-        out3 = annotate.draw_targets(frame, [])
-        assert out3.shape == frame.shape and (out3 == frame).all()
-    _step("可视化：空目标原样返回", _empty_ok)
-
-    def _inplace_ok():
-        f4 = frame.copy()
-        out4 = annotate.draw_targets(f4, target, copy=False)
-        assert out4 is f4 and _count(f4, _is_yellow) > 120
-    _step("可视化：copy=False 原地绘制", _inplace_ok)
-
-    def _edge_ok():
-        for by1 in (0, 2, 400):
-            f5 = _solid_frame()
-            cv2.rectangle(f5, (100, by1), (180, by1 + 70), (0, 180, 0), -1)
-            t5 = [{"shape": "SLZ", "conf": 0.9, "bbox": [100, by1, 180, by1 + 70],
-                   "color": "green", "gid": 33}]
-            o5 = annotate.draw_targets(f5, t5)
-            assert o5.shape == f5.shape
-    _step("可视化：贴顶/贴底目标文字不越界", _edge_ok)
-
-    tmpd = tempfile.mkdtemp(prefix="ann_")
-    path = os.path.join(tmpd, "sub", "last.jpg")
-
-    def _save_ok():
-        annotate.save_jpeg(path, box["out"], 80)
-        assert os.path.isfile(path), "图没写出来"
-        assert not os.path.exists(path + ".tmp"), "留下 .tmp 临时文件"
-        with open(path, "rb") as f:
-            data = f.read()
-        assert data[:2] == b"\xff\xd8" and data[-2:] == b"\xff\xd9", "不是合法 JPEG"
-        back = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-        assert back is not None and back.shape == box["out"].shape
-    _step("可视化：save_jpeg 原子写+可解码+自动建目录", _save_ok)
-
-    def _rewrite_ok():
-        for _ in range(3):
-            annotate.save_jpeg(path, box["out"], 70)
-        assert os.path.getsize(path) > 500
-        assert not os.path.exists(path + ".tmp")
-    _step("可视化：同一文件连写 3 次稳定", _rewrite_ok)
-
-    print("  色约定：黄=贴合旋转框 青=抓取点 红虚线=回退到框中心")
 
 
 def main():
@@ -1427,7 +1295,6 @@ def main():
                test_hand_eye, test_math, test_aligned_residual,
                test_camera_model, test_intrinsic_quality,
                test_safety, test_hsv_calib, test_grasp_refine,
-               test_annotate,
                test_hold_detector, test_pos_text, test_serial_port,
                test_material_shape_table):
         print("\n--- %s ---" % fn.__name__)

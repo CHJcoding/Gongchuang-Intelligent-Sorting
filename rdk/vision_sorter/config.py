@@ -10,29 +10,38 @@ CAM_WIDTH = 640
 CAM_HEIGHT = 480
 CAM_FPS = 30
 
-# ============ YOLOv5s 检测 (地平线 BPU .bin 模型) ============
-# 基线（2026-10-21 实读核实）：best.pt = myYOLOv5s，7 类，训练 imgsz=640；
-# 实际导出 ONNX/bin 为 672×672 + NHWC raw 三尺度（36 = 3×(5+7)）。
-# 决策 D2：暂用板上已跑通的 672，不重导出；现场精度不足再回 640。
-YOLO_BIN_MODEL = "weights/yolov5_best.bin"   # 板上实际文件名以板端为准
-YOLO_IMGSZ = 672            # 必须与 .bin 输入尺寸一致，否则维度报错
-YOLO_NUM_CLASSES = 7
-# 板端实测（10-21）：0.25 时一帧能吐 45 个重叠误检；0.50 -> 2~4 个；0.80 -> 稳定 1 个。
-# 现场只有圆锥一种物料，统一用 0.80。
-YOLO_CONF_THRES = 0.80
+# ============ YOLOv8s 检测 (地平线 BPU .bin 模型) ============
+# 2026-10-29：新模型由业务节点直接推理，不再订阅 dnn_node_example。
+# 模型输入 640×640，6 输出 = (cls, bbox) × 3 个尺度；bbox 是 float32 + NHWC。
+USE_LOCAL_DETECTION = True
+YOLO_BIN_MODEL = "/root/vision_ws/gc_best_1029.bin"
+YOLO_IMGSZ = 640
+YOLO_NUM_CLASSES = 8
+YOLO_CONF_THRES = 0.60
 YOLO_IOU_THRES = 0.45
-# 7 类形状：顺序即 class_id，必须与 best.pt 的 model.names 完全一致
-# ============ 检测模型类别（2026-10-29 换 YOLOv8 8 类模型）============
-# 顺序必须与模型 labels.list 的**行序**一致：TROS 把标签字符串塞进
-# roi.type，我们板端用的 labels.list 已经改写成下面这套短名，所以
-# 行序 = 类别索引 = SHAPE_NAMES 的下标。
-# 板端文件：/root/vision_ws/gc_1029_labels.list
-#   hollow_cube / tetrahedron / pentagonal_prism / triangular_prism /
-#   cone / cylinder / hemisphere / cube
-SHAPE_NAMES = ["LK", "SMT", "WLZ", "SLZ", "YZHU", "YZ", "BQ", "CUBE"]
+YOLO_INFER_PERIOD_S = 0.05   # 最多约 20 Hz，避免图像回调被推理完全占满
+DET_VALID_RADIUS_ONLY = True # 只允许内参可信区域内的目标触发
+DET_BORDER_MARGIN_PX = 6     # 排除紧贴画面边缘的误检
+DET_MIN_BOX_PX = 12          # 过小框不参与分拣
+PUBLISH_DEBUG_IMAGE = True
+DEBUG_IMAGE_TOPIC = "/image_annotated"
+DEBUG_IMAGE_JPEG_QUALITY = 80
+DEBUG_BOX_FIT = True
+DEBUG_DRAW_RAW_BOX = True
+# 8 类形状：顺序即 class_id，必须与 best_1029.pt 的 model.names 完全一致
+SHAPE_NAMES = [
+    "hollow_cube", "tetrahedron", "pentagonal_prism", "triangular_prism",
+    "cone", "cylinder", "hemisphere", "cube",
+]
 SHAPE_NAMES_CN = {
-    "LK": "镂空正方体", "SMT": "正四面体", "WLZ": "五棱柱", "SLZ": "三棱柱",
-    "YZHU": "圆锥", "YZ": "圆柱", "BQ": "半球", "CUBE": "正方体",
+    "hollow_cube": "镂空正方体",
+    "tetrahedron": "正四面体",
+    "pentagonal_prism": "五棱柱",
+    "triangular_prism": "三棱柱",
+    "cone": "圆锥",
+    "cylinder": "圆柱",
+    "hemisphere": "半球",
+    "cube": "实心正方体",
 }
 
 # ============ 物料编号（与 STM32 侧 10x10 表对齐，2026-10-26）============
@@ -50,22 +59,19 @@ SHAPE_NAMES_CN = {
 #   8 六棱柱    80   81   82   83   84   85   86   87   88   89
 #   9 三棱锥    90   91   92   93   94   95   96   97   98   99
 #
-# 我们的检测模型有 8 类（1029 版比上一版多了 cube 正方体），
-# 仍缺 0(长方体) / 8(六棱柱)；BQ 训练时叫"半球"，在 32 的表里落到 2(球)。
-# 2026-10-28 用户确认：球是有的（2 号不是空号）。
-# 换新模型补 0/8 两类时：改 SHAPE_NAMES / SHAPE_NAMES_CN / SHAPE_IDS 三处即可，
+# 新 8 类模型已覆盖 1/2/3/4/5/6/7/9，缺 0(长方体) 和 8(六棱柱)。
 SHAPE_IDS = {
-    "LK": 1,     # hollow_cube      镂空正方体
-    "BQ": 2,     # hemisphere       半球 -> 球
-    "SLZ": 3,    # triangular_prism 三棱柱
-    "YZHU": 4,   # cone             圆锥
-    "CUBE": 5,   # cube             正方体（1029 版新增）
-    "YZ": 6,     # cylinder         圆柱
-    "WLZ": 7,    # pentagonal_prism 五棱柱
-    "SMT": 9,    # tetrahedron      正四面体 -> 三棱锥
+    "hollow_cube": 1,
+    "hemisphere": 2,
+    "triangular_prism": 3,
+    "cone": 4,
+    "cube": 5,
+    "cylinder": 6,
+    "pentagonal_prism": 7,
+    "tetrahedron": 9,
 }
 # 模型里没有、但 32 的表里有的形状（识别不到就会把它们判成别的类，需谨慎）
-# 换新 YOLO 模型后这两类补齐，这里会自动变空（下面有 assert 兜着）。
+# 新 8 类已补齐 5（实心正方体）；仍缺 0 和 8，下面会由 assert 校验。
 SHAPE_IDS_MISSING = {0: "长方体", 8: "六棱柱"}
 
 
@@ -73,7 +79,7 @@ SHAPE_IDS_MISSING = {0: "长方体", 8: "六棱柱"}
 # 这张表是"STM32 收到什么就是什么"的唯一口径来源：形状号 -> 中文名。
 # 十个号都有实物（2 号是球），没有预留空号。
 # 代码里凡是需要"形状号 -> 名字"的地方都查这张表，避免注释和代码两套口径漂移。
-# 换新模型补 0/5/8 时：改 SHAPE_NAMES / SHAPE_NAMES_CN / SHAPE_IDS 三处即可，
+# 换模型补 0/8 时：改 SHAPE_NAMES / SHAPE_NAMES_CN / SHAPE_IDS 三处即可，
 # 下面两条 assert 会校验"模型类 <-> 32 形状号 <-> 缺失表"三者是否自洽。
 MATERIAL_SHAPE_TABLE = {
     0: "长方体",
@@ -209,8 +215,8 @@ CAMERA_INTRINSIC_JSON = ""   # 想固定路径填绝对路径；留空自动找
 IMAGE_WIDTH = 640
 IMAGE_HEIGHT = 480
 
-# ============ ROS2 话题（D1 架构：订阅官方 dnn_node_example）============
-# 板端实测：/hobot_dnn_detection 类型 ai_msgs/PerceptionTargets，Target 字段是 rois
+# ============ ROS2 话题 ============
+# 默认由业务节点直接推理；DET_TOPIC 保留给 USE_LOCAL_DETECTION=False 的外部模式。
 DET_TOPIC = "/hobot_dnn_detection"
 IMG_TOPIC = "/image"                 # sensor_msgs/CompressedImage (jpeg)
 RESULT_TOPIC = "/vision/result"      # 与 chassis_driver.py 的订阅名对齐
@@ -259,21 +265,13 @@ GRASP_V_TOL = 70            # 明度半宽
 SERIAL_SIM = False         # True: 不连下位机，只打印指令（无 STM32 时调试用）
 SCAN_ALL = False           # True: 每秒把所有目标+判色结果打一行 [扫描]（台架联调用，只影响日志）
 
-# ============ 抓取点可视化（2026-10-28 加）============
-# 在预览里画出「贴合旋转框 + 抓取点」，用于现场核对抓取点是否落在物料中心。
-# 实现：节点每 ANNOTATE_FPS 帧写一张 /root/vision_ws/preview/last.jpg，
-#       由 tools/mjpeg_view.py 在 :8001 转成 MJPEG 网页，浏览器直接看。
-# 关掉：ANNOTATE_ENABLE = False（只多写磁盘，不影响下发）
-ANNOTATE_ENABLE = True
-ANNOTATE_DIR = "/root/vision_ws/preview"
-ANNOTATE_FPS = 6.0         # 写图上限（帧/秒）；检测是 30fps，没必要每帧都写
-ANNOTATE_QUALITY = 80      # JPEG 质量
-ANNOTATE_VERBOSE = True    # True: 多画贴合正框(绿细线) + 尺寸/角度/像素数
-
 # ============ 串口 (Linux) ============
 # STM32 走 USB CDC，设备名是 /dev/ttyACM0（不是 CH340 的 /dev/ttyUSB0）。
 # 拔插/重启后编号可能变成 ACM1、ACM2，所以给一串候选，
 # comm.resolve_serial_port() 会按 /dev/serial/by-id → SERIAL_PORT → 候选表 的顺序找。
+# udev 规则给的稳定符号链接（/etc/udev/rules.d/61-gc-stm32.rules）：
+# 不管枚举成 ttyACM0 还是 ttyACM1，这个名字永远不变，脚本和串口助手都不会找错口。
+SERIAL_PORT_STABLE = "/dev/ttyGC"
 SERIAL_PORT = "/dev/ttyACM0"
 SERIAL_PORT_CANDIDATES = [
     "/dev/ttyACM0",
@@ -284,7 +282,17 @@ SERIAL_PORT_CANDIDATES = [
 SERIAL_BAUD = 115200
 FRAME_HEAD = [0xAA, 0x55]
 FRAME_TAIL = 0x0D
+
+# 下行帧 [2][3] 的口径开关（2026-10-30 统一；改这里，STM32 固件要同步改）
+#   "split"    : [2] = 形状号 SHAPE_IDS（0~9）   [3] = 颜色号 COLOR_IDS（0~9）  <- 当前
+#   "combined" : [2] = 物料编号 形状*10+颜色（0~99） [3] = 颜色号（旧口径，仅兼容用）
+FRAME_ID_MODE = "split"
 ACK_BYTE = 0x06            # 帧级 ACK（"收到帧了"）—— 本方案默认不要求，见 SEND_WAIT_ACK
+# [8] 校验字节口径（2026-10-30）
+FRAME_CRC_MODE = "poly07"  # poly07: [8]=CRC8 poly 0x07 覆盖 [0..7]（协议文档口径，默认）
+                           # raw   : [8]=固定值 FRAME_CRC_FIXED（A/B 定位 32 是否校验 CRC）
+FRAME_CRC_FIXED = 0xEA     # raw 模式下填的固定值（可改成 0x00 再试）
+
 RETRY_TIMES = 3            # 仅 SEND_WAIT_ACK=True 时生效
 TIMEOUT_S = 0.5            # 仅 SEND_WAIT_ACK=True 时生效
 
@@ -304,6 +312,19 @@ GRAB_TIMEOUT_S = 20.0      # 兜底：超时强制解锁，防止永久卡死（
 BLANK_AFTER_DONE_S = 0.8   # 抓完后再屏蔽这么久（等机械臂收回、离开视野）
 GRAB_BLANK_DETECT = True   # 抓取期间忽略检测：机械臂进入视野会被误检成物料
 SEND_WAIT_ACK = False      # False = 发完就走，不等帧级 ACK（你现在的方案）
+
+# ============ 上电归零握手（整条流程的第一步）============
+# 现场约定（2026-10-29 确认）：STM32 上电后自己回零点，回到零点后主动发一个"完成"
+# 信号（GRAB_DONE_BYTE 0x06 或文本 "OK"，与抓放完成用的是同一个信号）。
+# 所以 RDK 用「上电后收到的第一个 OK = 归零完成」，此后每个 OK = 一次抓放完成：
+#
+#   STM32 上电 -> 回零 -> OK  ─┐
+#                              ├─ RDK: 收到第一个 OK -> 下发第 1 颗物料
+#   RDK 下发坐标 -> 32 抓+放 -> OK  ──── RDK: 解锁 -> 下发第 2 颗物料 ...
+#
+HOMING_REQUIRED = True       # True: 没收到归零完成 OK 之前一律不下发第一颗物料
+HOMING_LOG_EVERY_S = 10.0    # 还在等归零时，每隔多久提示一次
+HOMING_BYPASS_AFTER_S = 0.0  # >0: 等这么多秒还没 OK 就放行（0=一直等，绝不跳过）
 
 # ---- 抓取结果状态：2 字节回收协议（已实现，但先不启用）----
 # 1 字节协议只表示"抓完了"；2 字节协议还能带回"抓成功没有"：
@@ -372,3 +393,18 @@ ALLOW_UNCALIBRATED = False     # 等价于命令行 -p allow_uncalibrated:=true�
 SERIAL_SIM_ON_FAIL = False
 # 串口掉了以后多久重试打开一次（插拔 USB 转串口后能自愈）
 SERIAL_REOPEN_S = 5.0
+
+# ---- 串口看门狗（2026-10-30）----
+# 每 SERIAL_WATCHDOG_S 秒探一次链路：设备节点还在不在、句柄还能不能 ioctl、
+# 是不是同一次 USB 连接（32 复位重新枚举后 devnum 会变）。
+# 作用：32 拔线/复位后节点不再"握着死句柄假报正常"，会自动丢句柄并重连。
+SERIAL_WATCHDOG_S = 0.5
+# 重连后等 32 归零 OK 的上限（秒）。
+#   32 复位过（devnum 变了）→ 必须重新等 OK；
+#   等这么久还没 OK → 说明 32 没复位，之前的归零没过期，按已归零继续。
+#   设 0 = 一直等（严格，但 32 没复位时会永久卡住）
+SERIAL_REHOME_ASSUME_HOMED_S = 20.0
+
+# 预览框：True = 用 minAreaRect 的旋转四边形（贴合物料，能看出朝向）
+#         False = 用轴对齐外接框（旧行为，便于 A/B 对比）
+DEBUG_DRAW_ROTATED_BOX = True

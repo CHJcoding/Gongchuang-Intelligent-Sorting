@@ -131,12 +131,18 @@ def _crc8(data: bytes) -> int:
 def build_frame(shape_name, color_name, x_mm, y_mm) -> bytes:
     """组帧（独立出来便于单测/离线校验）。10 字节，不含 z。
 
-    [2] 发的是**物料整体编号** = 形状*10 + 颜色（0~99，见 config.SHAPE_IDS 的表），
-    [3] 发颜色编号（= 编号 % 10），STM32 侧可用来交叉校验。
-    例如"橙色的镂空正方体" = 1*10 + 1 = 11；识别不出形状或颜色时两个字节都发 255。
+    [2] = **形状号**（config.SHAPE_IDS，0~9），[3] = **颜色号**（config.COLOR_IDS，0~9）。
+    2026-10-30 起下行统一走"形状 / 颜色 两字节"口径（config.FRAME_ID_MODE = "split"），
+    与 STM32 侧 协议说明_串口帧.md 第 2 节一致。
+    把 config.FRAME_ID_MODE 置成 "combined" 时，[2] 退回旧口径"物料整体编号 = 形状*10+颜色"
+    （0~99），[3] 仍是颜色号 —— 仅为兼容老固件保留。
+    识别不出形状或颜色时，对应字节发 255（UNKNOWN_ID）。
     """
     mid, shape_id, color_id = material_id(shape_name, color_name)
-    id_byte = UNKNOWN_ID if mid is None else mid
+    if C.FRAME_ID_MODE == "combined":
+        id_byte = UNKNOWN_ID if mid is None else mid
+    else:
+        id_byte = UNKNOWN_ID if shape_id is None else shape_id
     x_i = int(round(x_mm))
     y_i = int(round(y_mm))
     # int16 范围保护，越界截断而不是抛异常
@@ -144,7 +150,10 @@ def build_frame(shape_name, color_name, x_mm, y_mm) -> bytes:
     y_i = max(-32768, min(32767, y_i))
     body = bytes(C.FRAME_HEAD) + bytes([id_byte, color_id]) + \
         struct_pack_hh(x_i, y_i)
-    crc = _crc8(body)
+    if getattr(C, "FRAME_CRC_MODE", "poly07") == "raw":
+        crc = int(getattr(C, "FRAME_CRC_FIXED", 0x00)) & 0xFF
+    else:
+        crc = _crc8(body)
     return body + bytes([crc, C.FRAME_TAIL])
 
 
@@ -172,6 +181,9 @@ def serial_port_candidates(preferred=None):
           → config.SERIAL_PORT_CANDIDATES
     """
     out = []
+    stable = getattr(C, "SERIAL_PORT_STABLE", None)
+    if stable:
+        out.append(stable)
     by_id = "/dev/serial/by-id"
     try:
         if os.path.isdir(by_id):
@@ -204,10 +216,32 @@ def resolve_serial_port(preferred=None):
     return cands[0] if cands else ""
 
 
+def usb_devnum(path):
+    """设备节点 → 这次 USB 连接的编号（同一口重新枚举后编号会变）。
+
+    设备名（ttyACM0 / ttyACM1）拔插后会漂移，这个 devnum 只在"真的重新插了一次"
+    或下位机复位重新枚举时才变，所以它是判断"我手里的句柄是不是已经作废"的硬证据。
+    取不到（非 USB 串口、权限不足）时返回 None，调用方按"看不出来"处理。
+    """
+    try:
+        name = os.path.basename(os.path.realpath(path))
+        dev = os.path.realpath("/sys/class/tty/%s/device" % name)
+    except (OSError, ValueError):
+        return None
+    for base in (dev, os.path.dirname(dev)):
+        try:
+            with open(os.path.join(base, "devnum")) as f:
+                return "%s:%s" % (os.path.basename(base), f.read().strip())
+        except OSError:
+            continue
+    return None
+
+
 class Comm:
     def __init__(self):
         self.ser = None
         self.port = None                  # 实际打开的设备名（open() 时解析，日志里打出来）
+        self.devnum = None                # 打开时那次 USB 连接的编号（usb_devnum）
         self.lock = threading.Lock()      # 写线程(发送) 与 ROS定时器(读完成字节) 共用串口
         self.done_seen = False
         self.done_status = None           # 2 字节协议的结果码；1 字节协议为 None
@@ -229,6 +263,7 @@ class Comm:
         port = resolve_serial_port()
         with self.lock:
             self.port = port
+            self.devnum = usb_devnum(port)
             self.ser = serial.Serial(
                 port, C.SERIAL_BAUD, timeout=0)   # 非阻塞读
             time.sleep(0.2)
@@ -249,6 +284,29 @@ class Comm:
             return self.ser is not None and bool(self.ser.is_open)
         except Exception:
             return False
+
+    def link_state(self):
+        """链路健康度：'ok' / 'closed' / 'gone' / 'hungup' / 'replaced'。
+
+        只看 is_open() 是不够的：USB 拔掉之后 pyserial 的 is_open() 仍然返回 True，
+        上层就会一直以为串口好好的（现场卡在归零闸 4 分钟就是这么来的）。
+        这里补三件事：
+          1) 设备节点还在不在（拔线后 /dev/ttyACM* 直接消失）
+          2) 句柄还能不能 ioctl（拔线后内核回 EIO，in_waiting 会抛异常）
+          3) 是不是同一次 USB 连接（32 复位会重新枚举，devnum 变）
+        """
+        if self.ser is None:
+            return "closed"
+        if not self.port or not os.path.exists(self.port):
+            return "gone"
+        try:
+            _ = self.ser.in_waiting       # 真的问一次内核，死句柄抛 EIO
+        except Exception:                  # noqa: BLE001
+            return "hungup"
+        cur = usb_devnum(self.port)
+        if self.devnum and cur and cur != self.devnum:
+            return "replaced"
+        return "ok"
 
     def reopen(self):
         """关掉重开一次（用于 USB 转串口热插拔后自愈）。返回是否成功。"""

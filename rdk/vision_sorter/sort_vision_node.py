@@ -1,18 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-视觉分拣节点（D1 架构：不自跑 BPU，订阅官方 dnn_node_example 的检测结果）。
+视觉分拣节点（本地 BPU 推理架构）。
 
-数据流：
-    hobot_usb_cam --/hbmem_img--> dnn_node_example
-                                     --/hobot_dnn_detection--> 本节点
-    hobot_usb_cam --/image(CompressedImage)--> 本节点（取同帧 HSV 颜色）
-    本节点 --/vision/result(JSON)--> 底盘/机械臂节点
-    本节点 --串口(AA55+CRC8)--> STM32
+默认数据流：
+    hobot_usb_cam --/image(CompressedImage)--> 本节点
+      本节点：letterbox 预处理 -> pyeasy_dnn -> YOLOv8 解码 -> HSV 判色
+              -> 像素/毫米坐标 -> /vision/result + STM32 串口
 
-关键事实（2026-10-21 板端实测）：
-  * /hobot_dnn_detection 类型 ai_msgs/PerceptionTargets，Target 字段是 rois（没有 tracks）
-  * ROI 坐标就是原图 640x480 像素坐标，无需任何缩放（实测误差 1~3px）
-  * 板端 dnn_node 前处理是拉伸（非 letterbox），精度有损，后续建议重建 640x480 bin
+USE_LOCAL_DETECTION=False 时仍可订阅 /hobot_dnn_detection，作为回退路径。
+本地模式保证检测框与判色使用同一帧，不再依赖独立 dnn_node_example 进程。
 """
 import json
 import os
@@ -36,12 +32,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C
 import comm                       # 组帧用（模拟模式要打出真实字节）
 from color_classifier import classify_color
-import annotate
 import grasp_refine
 import hand_eye
 import camera_model
 import safety
 from hand_eye import pixel_to_robot
+from yolov8_bpu import Yolov8Bpu
 
 
 # ============================ 串口工作线程 ============================
@@ -148,14 +144,32 @@ class SortVisionNode(Node):
         self.stat_edge = 0                 # 目标落在去畸变覆盖区外的次数
         self.stat_refine_ok = 0            # 抓取点精修成功（用轮廓点）次数
         self.stat_refine_fb = 0            # 精修回退到框中心的次数
-        self._ann_t = 0.0                  # 标注图上次写盘时间（限频用）
-        self._ann_n = 0                    # 标注图累计张数
         self.last_reopen_t = 0.0           # 上次尝试重连串口的时刻
+        self.last_infer_t = 0.0
+        self.stat_infer_ms = 0.0
+
+        # ---- 本地 BPU 推理 ----
+        self.use_local_detection = bool(
+            getattr(C, "USE_LOCAL_DETECTION", True))
+        self.detector = None
+        if self.use_local_detection:
+            self.detector = Yolov8Bpu(
+                C.YOLO_BIN_MODEL,
+                C.SHAPE_NAMES,
+                conf_thres=C.YOLO_CONF_THRES,
+                iou_thres=C.YOLO_IOU_THRES,
+                verbose=True)
 
         # ---- 发布 ----
         self.pub_result = self.create_publisher(String, C.RESULT_TOPIC, 10)
         self.pub_state = self.create_publisher(String, "/sort/state", 10)
         self.pub_debug = self.create_publisher(String, "/sort/debug", 10)
+        self.pub_debug_image = None
+        self._dbg_tick = 0
+        self._dbg_reason = {}
+        if getattr(C, "PUBLISH_DEBUG_IMAGE", True):
+            self.pub_debug_image = self.create_publisher(
+                CompressedImage, C.DEBUG_IMAGE_TOPIC, 10)
         # 夹爪坐标回显（POS_ENABLE=True 才建话题，避免没开时挂个空话题）
         self.pub_pos = None
         if getattr(C, "POS_ENABLE", False):
@@ -169,8 +183,9 @@ class SortVisionNode(Node):
             history=HistoryPolicy.KEEP_LAST)
         self.create_subscription(CompressedImage, C.IMG_TOPIC,
                                  self.on_image, img_qos)
-        self.create_subscription(PerceptionTargets, C.DET_TOPIC,
-                                 self.on_detection, 10)
+        if not self.use_local_detection:
+            self.create_subscription(PerceptionTargets, C.DET_TOPIC,
+                                     self.on_detection, 10)
         self.create_subscription(Bool, "/sort/start", self.on_start, 10)
         self.create_subscription(Bool, "/sort/reset", self.on_reset, 10)
 
@@ -180,6 +195,16 @@ class SortVisionNode(Node):
         # ---- 串口 ----
         self.comm = None
         self.serial_worker = None
+        # ---- 上电归零握手状态 ----
+        self.homed = not bool(getattr(C, "HOMING_REQUIRED", False))
+        self.home_wait_since = time.time()
+        self._home_warn_t = 0.0
+        # ---- 串口看门狗（2026-10-30）----
+        self._wdt_t = 0.0                 # 上次探链路的时刻
+        self._was_homed = False           # 掉线前是否已经归零过
+        self._loss_devnum = None          # 掉线前那次 USB 连接的编号
+        self._homing_grace_s = 0.0        # 重连后等 OK 的宽限（0=严格等）
+        self._stat_link_loss = 0          # 掉线次数（统计行里能看到）
         self.serial_ok = bool(self.serial_sim)     # 模拟模式视为"可用"
         self._init_serial()
 
@@ -190,7 +215,8 @@ class SortVisionNode(Node):
         self.get_logger().info(
             "sort_vision_node 启动 | det=%s img=%s result=%s | auto=%s sim=%s | "
             "完成判定=%s(cycle=%.1fs timeout=%.1fs)"
-            % (C.DET_TOPIC, C.IMG_TOPIC, C.RESULT_TOPIC,
+            % ("本地BPU" if self.use_local_detection else C.DET_TOPIC,
+               C.IMG_TOPIC, C.RESULT_TOPIC,
                self.auto_trigger, self.serial_sim,
                self.grab_done_mode, self.grab_cycle_s, self.grab_timeout_s))
 
@@ -220,19 +246,13 @@ class SortVisionNode(Node):
                 % (getattr(C, "POS_FRAME_HEAD", 0x07),
                    getattr(C, "POS_FRAME_LEN", 6),
                    getattr(C, "POS_TOPIC", "/gantry/pos")))
-        if getattr(C, "ANNOTATE_ENABLE", False):
-            self.get_logger().info(
-                "抓取点可视化已开启 | 写图=%s/last.jpg %.0f帧/秒 | "
-                "看图：python3 tools/mjpeg_view.py 然后浏览器打开 "
-                "http://<板子IP>:8001"
-                % (getattr(C, "ANNOTATE_DIR", "/root/vision_ws/preview"),
-                   float(getattr(C, "ANNOTATE_FPS", 6.0))))
 
     # ---------------- 串口 ----------------
     def _init_serial(self):
         if self.serial_sim:
             self.get_logger().warn("serial_sim=True：不连下位机，只打印指令")
             self.serial_ok = True
+            self.homed = True
             return
         try:
             from comm import Comm
@@ -242,6 +262,7 @@ class SortVisionNode(Node):
             self.serial_worker.start()
             self.serial_ok = True
             self.get_logger().info("串口已打开 %s @%d" % (self._comm_port(), C.SERIAL_BAUD))
+            self._reset_homing()
         except Exception as e:
             self.comm = None
             self.serial_worker = None
@@ -254,6 +275,7 @@ class SortVisionNode(Node):
                     (type(e).__name__, e))
                 self.serial_sim = True
                 self.serial_ok = True
+                self.homed = True
             else:
                 # 生产模式：明确报错，拒绝下发，并周期性重试
                 self.get_logger().error(
@@ -263,6 +285,78 @@ class SortVisionNode(Node):
                     (type(e).__name__, e, self._comm_port(),
                        getattr(C, "SERIAL_REOPEN_S", 5.0)))
                 self._publish_state("SERIAL_ERROR")
+
+    # ---------------- 上电归零握手 ----------------
+    def _reset_homing(self, keep_homed=False, grace_s=0.0):
+        """回到"等 STM32 归零完成 OK"的状态（串口刚打开/刚恢复时调用）。
+
+        keep_homed=True：串口只是抖了一下，32 没复位（devnum 没变），
+                         之前的归零依然有效，不重等 OK（否则会永久卡住）。
+        grace_s：重连后最多等这么久 OK，超时按"32 没复位"继续。
+        """
+        if self.serial_sim or self.comm is None:
+            self.homed = True
+            self._homing_grace_s = 0.0
+            return
+        self.home_wait_since = time.time()
+        self._home_warn_t = 0.0
+        self._homing_grace_s = max(0.0, float(grace_s or 0.0))
+        if keep_homed:
+            self.homed = True
+            self.get_logger().warn(
+                "[归零] 串口恢复，仍是同一次 USB 连接（%s）→ 32 没复位，"
+                "沿用已归零状态，不重等 OK"
+                % (getattr(self.comm, "devnum", "?")))
+            self._publish_state("HOMED")
+            return
+        self.homed = not bool(getattr(C, "HOMING_REQUIRED", False))
+        if not self.homed:
+            self.get_logger().info(
+                "[归零] 等待 STM32 上电回零完成的 OK（收到前不下发任何物料）")
+            self._publish_state("WAIT_HOME")
+
+    def _check_homing(self, now):
+        """
+        整条流程的第一步：等 STM32 回零完成。
+
+        现场约定：32 上电自己回零，到点后发一个完成信号（0x06 或文本 "OK"），
+        和抓放完成用的是同一个信号。所以「上电后第一个 OK」= 归零完成，
+        之后每个 OK = 一次抓放完成，由 _end_grab 消费。
+        """
+        if self.homed:
+            return
+        if self.comm is not None and self.comm.poll_done():
+            self.homed = True
+            self.get_logger().info(
+                "[归零] 收到 STM32 归零完成 OK（等了 %.1fs），开始下发第一颗物料"
+                % (now - self.home_wait_since))
+            self._publish_state("HOMED")
+            return
+        waited = now - self.home_wait_since
+        grace = self._homing_grace_s
+        if grace > 0.0 and waited >= grace:
+            self.homed = True
+            self._homing_grace_s = 0.0
+            self.get_logger().warn(
+                "[归零] 串口重连后等了 %.0fs 没收到 OK —— 32 没复位，按已归零继续"
+                "（SERIAL_REHOME_ASSUME_HOMED_S=%.0f，设 0 可改为一直等）"
+                % (waited, grace))
+            self._publish_state("HOME_ASSUMED")
+            return
+        bypass = float(getattr(C, "HOMING_BYPASS_AFTER_S", 0.0) or 0.0)
+        if bypass > 0.0 and waited >= bypass:
+            self.homed = True
+            self.get_logger().warn(
+                "[归零] 等了 %.0fs 没有 OK，按 HOMING_BYPASS_AFTER_S=%.0f 放行"
+                % (waited, bypass))
+            self._publish_state("HOME_BYPASS")
+            return
+        every = float(getattr(C, "HOMING_LOG_EVERY_S", 10.0))
+        if now - self._home_warn_t >= every:
+            self._home_warn_t = now
+            self.get_logger().warn(
+                "[归零] 等待 STM32 归零完成信号... 已等 %.0fs（串口%s）"
+                % (waited, "已连接" if self.serial_ok else "未连上"))
 
     def _comm_port(self):
         """日志里显示"实际用哪个串口"：已打开就报真实设备，否则报解析出来的候选。
@@ -278,6 +372,75 @@ class SortVisionNode(Node):
             return resolve_serial_port()
         except Exception:                              # noqa: BLE001
             return C.SERIAL_PORT
+
+    # ---------------- 串口看门狗（2026-10-30）----------------
+    def _drop_serial(self, why):
+        """
+        发现链路不可信时主动把句柄扔掉，交给 _try_reopen_serial 重连。
+
+        为什么必须主动扔：拔线/32 复位后 pyserial 的 is_open() 仍是 True，
+        而原来的代码只在"写失败"时才置 serial_ok=False。归零闸在写之前就 return，
+        于是「不写 → 发现不了掉线 → 不重连 → 一直等一个不会来的 OK」，
+        现场就这么卡了 4 分钟。
+        """
+        self._was_homed = bool(self.homed)
+        self._loss_devnum = getattr(self.comm, "devnum", None) if self.comm else None
+        self._stat_link_loss += 1
+        self.serial_ok = False
+        old = getattr(self.comm, "port", "?") if self.comm else "?"
+        if self.serial_worker is not None:
+            try:
+                self.serial_worker.stop()
+            except Exception:                      # noqa: BLE001
+                pass
+            self.serial_worker = None
+        if self.comm is not None:
+            try:
+                self.comm.close()
+            except Exception:                      # noqa: BLE001
+                pass
+        self.get_logger().error(
+            "串口掉线（%s）：%s 不可用了（第 %d 次），已丢句柄，%.0fs 后重连；"
+            "归零状态%s"
+            % (why, old, self._stat_link_loss,
+               float(getattr(C, "SERIAL_REOPEN_S", 5.0)),
+               "保留" if self.homed else "未获得"))
+        self._publish_state("SERIAL_LOST")
+
+    def _serial_watchdog(self):
+        """每 SERIAL_WATCHDOG_S 秒探一次链路，坏了就重连。
+
+        这是"串口不漂移"的一半：另一半是 udev 稳定符号链接 /dev/ttyGC
+        （不管枚举成 ttyACM0 还是 ACM1，名字都不变）。
+        """
+        if self.serial_sim:
+            return
+        now = time.time()
+        if now - self._wdt_t < float(getattr(C, "SERIAL_WATCHDOG_S", 0.5)):
+            return
+        self._wdt_t = now
+        if self.serial_ok and self.comm is not None:
+            try:
+                state = self.comm.link_state()
+            except Exception:                      # noqa: BLE001
+                state = "hungup"
+            if state != "ok":
+                self._drop_serial(state)
+                self.last_reopen_t = 0.0           # 允许下一拍立刻试一次
+                return
+        if not self.serial_ok:
+            self._try_reopen_serial()
+
+    def _serial_state_text(self):
+        """统计行里的串口字段：一眼看出用的哪个口、掉过几次。"""
+        if self.serial_sim:
+            return "模拟"
+        if self.serial_ok:
+            txt = "正常(%s)" % getattr(self.comm, "port", "?")
+            if self._stat_link_loss:
+                txt += " 掉线%d次" % self._stat_link_loss
+            return txt
+        return "故障(重连中)"
 
     def _try_reopen_serial(self):
         """串口掉了以后周期性重连（USB 转串口热插拔能自愈）。"""
@@ -296,9 +459,16 @@ class SortVisionNode(Node):
                 self.serial_ok = True
                 self.serial_worker = SerialWorker(self.comm, self)
                 self.serial_worker.start()
-                self.get_logger().info("串口已恢复 %s @%d，继续正常下发" %
-                                       (self._comm_port(), C.SERIAL_BAUD))
+                self.get_logger().info("串口已恢复 %s @%d (devnum=%s)" %
+                                       (self._comm_port(), C.SERIAL_BAUD,
+                                        getattr(self.comm, "devnum", "?")))
                 self._publish_state("SERIAL_OK")
+                same = (getattr(self.comm, "devnum", None) is not None and
+                        self._loss_devnum is not None and
+                        self.comm.devnum == self._loss_devnum)
+                self._reset_homing(
+                    keep_homed=bool(same and self._was_homed),
+                    grace_s=float(getattr(C, "SERIAL_REHOME_ASSUME_HOMED_S", 0.0) or 0.0))
             else:
                 self.get_logger().warn("串口仍打不开，%.0fs 后重试" % period,
                                        throttle_duration_sec=15.0)
@@ -331,7 +501,12 @@ class SortVisionNode(Node):
         注意：坐标回传和完成字节共用同一条串口，必须都在这里轮询，
         由 comm 的统一解析泵拆分，谁也不会吃掉谁的字节。
         """
+        self._serial_watchdog()
         self._poll_gantry_pos()
+        if not self.homed:
+            self._check_homing(time.time())
+            if not self.homed:
+                return
         if not self.busy:
             return
         now = time.time()
@@ -417,6 +592,16 @@ class SortVisionNode(Node):
         with self.frame_lock:
             self.frames.append((key, frame))
 
+        if self.detector is None:
+            return
+
+        now = time.time()
+        period = max(0.0, float(getattr(C, "YOLO_INFER_PERIOD_S", 0.05)))
+        if now - self.last_infer_t < period:
+            return
+        self.last_infer_t = now
+        self._run_local_detection(frame, msg.header.stamp)
+
     def _pick_frame(self, stamp):
         key = stamp.sec * 1_000_000_000 + stamp.nanosec
         with self.frame_lock:
@@ -428,6 +613,186 @@ class SortVisionNode(Node):
                 if dt < best_dt:
                     best, best_dt = f, dt
             return best
+
+    def _run_local_detection(self, frame, stamp):
+        """在当前图像回调里直接推理，检测框和后续判色使用同一帧。"""
+        t0 = time.perf_counter()
+        try:
+            detections = self.detector.detect(frame)
+        except Exception as e:                       # noqa: BLE001
+            self.get_logger().error(
+                "本地 YOLOv8 推理失败: %s: %s" % (type(e).__name__, e),
+                throttle_duration_sec=2.0)
+            return
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.stat_det += 1
+        self.stat_infer_ms = 0.9 * self.stat_infer_ms + 0.1 * elapsed_ms
+        self._publish_debug_image(frame, stamp, detections)
+
+        targets = []
+        for d in detections:
+            if d.score < C.YOLO_CONF_THRES:
+                continue
+            targets.append({
+                "shape": d.name,
+                "conf": float(d.score),
+                "bbox": [int(round(d.x1)), int(round(d.y1)),
+                         int(round(d.x2)), int(round(d.y2))],
+            })
+        self._process_targets(targets, stamp, frame)
+
+    def _publish_debug_image(self, frame, stamp, detections):
+        """把本地推理结果画进 JPEG：贴合旋转框 + 抓取点 + 原始框。
+
+        WebSocket 预览订阅这个话题，不依赖 ai_msgs parser。
+        画不出来的原因（颜色判不出 / 掩膜不实心 / 尺寸不合理）会累计到
+        self._dbg_stat，每 5 秒打一行，方便现场判断是哪一类失败。
+        """
+        if self.pub_debug_image is None:
+            return
+        canvas = frame.copy()
+        n_fit = n_rect = n_valid = 0
+        for d in detections:
+            raw_bbox = [int(round(d.x1)), int(round(d.y1)),
+                        int(round(d.x2)), int(round(d.y2))]
+            x1, y1, x2, y2 = raw_bbox
+            thres = float(getattr(C, "YOLO_CONF_THRES", 0.0))
+            if d.score < thres:
+                # 低于下发阈值的弱检出：只画细灰框，不参与精修（否则
+                # 框本身就不准，精修必然以 color:box center 之类的理由回退，
+                # 把失败原因统计冲得看不清）
+                cv2.rectangle(canvas, (raw_bbox[0], raw_bbox[1]),
+                              (raw_bbox[2], raw_bbox[3]), (128, 128, 128), 1)
+                cv2.putText(canvas, "%s %.2f low" % (d.name, d.score),
+                            (raw_bbox[0] + 2, max(12, raw_bbox[1] - 4)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                            (128, 128, 128), 1, cv2.LINE_AA)
+                continue
+            H, W = frame.shape[:2]
+            roi = frame[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+            color_name, color_conf = (None, 0.0)
+            if roi.size:
+                color_name, color_conf = classify_color(roi)
+            gp = None
+            bbox = raw_bbox
+            if color_name is not None:
+                try:
+                    gp = grasp_refine.refine(frame, raw_bbox, color_name)
+                except Exception as e:                      # noqa: BLE001
+                    self.get_logger().warn(
+                        "预览精修异常: %s: %s" % (type(e).__name__, e),
+                        throttle_duration_sec=10.0)
+                    gp = None
+            fitted = bool(gp and gp.get("ok"))
+            if not fitted:
+                why = "color?" if color_name is None else str(
+                    (gp or {}).get("reason") or "no refine")[:16]
+                self._dbg_reason[why] = self._dbg_reason.get(why, 0) + 1
+            rp = None
+            if fitted:
+                n_fit += 1
+                bbox = [int(round(v)) for v in gp["tight_bbox"]]
+                if gp.get("rect_points") is not None:
+                    rp = np.asarray(gp["rect_points"], np.float32).copy()
+                    rp[:, 0] = np.clip(rp[:, 0], 0, W - 1)
+                    rp[:, 1] = np.clip(rp[:, 1], 0, H - 1)
+                    n_rect += 1
+            valid = self._target_in_valid_area({"bbox": bbox})
+            if valid:
+                n_valid += 1
+                draw_color = (0, 210, 0)
+                suffix = ""
+            else:
+                draw_color = (0, 165, 255)
+                suffix = " reject"
+            # 原始 YOLO 轴对齐框（细线，黄色）
+            if fitted and getattr(C, "DEBUG_DRAW_RAW_BOX", True):
+                cv2.rectangle(canvas, (raw_bbox[0], raw_bbox[1]),
+                              (raw_bbox[2], raw_bbox[3]), (0, 230, 255), 1)
+            # 贴合框：有旋转四边形就画四边形，否则退回收紧后的轴对齐框
+            if rp is not None:
+                cv2.polylines(canvas, [rp.astype(np.int32).reshape(-1, 1, 2)],
+                              True, draw_color, 2, cv2.LINE_AA)
+            else:
+                cv2.rectangle(canvas, (bbox[0], bbox[1]),
+                              (bbox[2], bbox[3]), draw_color, 2)
+            # 抓取点（红点 + 十字）
+            if fitted and gp.get("point") is not None:
+                px, py = gp["point"]
+                px, py = int(round(px)), int(round(py))
+                cv2.drawMarker(canvas, (px, py), (0, 0, 255),
+                               cv2.MARKER_CROSS, 12, 2)
+                cv2.circle(canvas, (px, py), 3, (0, 0, 255), -1)
+            if fitted:
+                label = "%s %.2f %s(%.2f) fit%s" % (
+                    d.name, d.score, color_name or "?", color_conf, suffix)
+            elif color_name is None:
+                label = "%s %.2f color?" % (d.name, d.score)
+            else:
+                label = "%s %.2f %s raw(%s)" % (
+                    d.name, d.score, color_name,
+                    (gp.get("reason") if gp else "no refine")[:18])
+            (tw, th), _ = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+            top = max(0, bbox[1] - th - 6)
+            cv2.rectangle(canvas, (bbox[0], top),
+                          (bbox[0] + tw + 4, top + th + 6), draw_color, -1)
+            cv2.putText(canvas, label, (bbox[0] + 2, top + th + 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                        (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.putText(canvas, "YOLOv8 %d total | fit %d | rot %d | valid %d"
+                    % (len(detections), n_fit, n_rect, n_valid),
+                    (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    (0, 255, 255), 2, cv2.LINE_AA)
+        self._dbg_tick += 1
+        if self._dbg_tick % 15 == 0:
+            self.get_logger().info(
+                "预览框: 检出=%d 精修成功=%d 旋转框=%d 可信=%d 失败原因=%s"
+                % (len(detections), n_fit, n_rect, n_valid,
+                   dict(sorted(self._dbg_reason.items(),
+                               key=lambda kv: -kv[1])[:4])),
+                throttle_duration_sec=2.0)
+        try:
+            ok, encoded = cv2.imencode(
+                ".jpg", canvas,
+                [int(cv2.IMWRITE_JPEG_QUALITY),
+                 int(getattr(C, "DEBUG_IMAGE_JPEG_QUALITY", 80))])
+            if not ok:
+                return
+            msg = CompressedImage()
+            msg.header.stamp = stamp
+            msg.header.frame_id = "camera"
+            msg.format = "jpeg"
+            msg.data = encoded.tobytes()
+            self.pub_debug_image.publish(msg)
+        except Exception as e:                       # noqa: BLE001
+            self.get_logger().warn(
+                "调试图发布失败: %s: %s" % (type(e).__name__, e),
+                throttle_duration_sec=5.0)
+
+
+    def _fit_preview_box(self, frame, raw_bbox):
+        """用颜色轮廓收紧预览框；失败时回退 YOLO 原始框。"""
+        if not getattr(C, "DEBUG_BOX_FIT", True):
+            return raw_bbox, False, None, 0.0, None
+        x1, y1, x2, y2 = raw_bbox
+        H, W = frame.shape[:2]
+        roi = frame[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+        if roi.size == 0:
+            return raw_bbox, False, None, 0.0, None
+        color, color_conf = classify_color(roi)
+        if color is None:
+            return raw_bbox, False, None, color_conf, None
+        gp = grasp_refine.refine(frame, raw_bbox, color)
+        if not gp["ok"]:
+            return raw_bbox, False, color, color_conf, None
+        fitted = [int(round(v)) for v in gp["tight_bbox"]]
+        rp = gp.get("rect_points")
+        if rp is not None:
+            rp = np.asarray(rp, np.float32).copy()
+            rp[:, 0] = np.clip(rp[:, 0], 0, W - 1)
+            rp[:, 1] = np.clip(rp[:, 1], 0, H - 1)
+        return fitted, True, color, color_conf, rp
 
     def on_detection(self, msg):
         self.stat_det += 1
@@ -449,17 +814,29 @@ class SortVisionNode(Node):
                              int(roi.rect.x_offset + roi.rect.width),
                              int(roi.rect.y_offset + roi.rect.height)],
                 })
+        frame = self._pick_frame(msg.header.stamp)
+        self._process_targets(targets, msg.header.stamp, frame)
+
+    def _process_targets(self, targets, stamp, frame):
         # 识别自检（台架模式）：放在屏蔽判定【之前】，抓取窗口里也照打,
         # 否则连续放料时会有一半结果被窗口吃掉。
         if self.scan_all and targets:
-            self._log_scan(targets, msg)
+            self._log_scan(targets, stamp, frame)
+
+        # 只允许可信成像区域内的目标驱动龙门。模型在画面边缘偶尔会给出
+        # 0.7~1.0 的误检，单靠 conf 阈值去不掉。
+        if getattr(C, "DET_VALID_RADIUS_ONLY", True):
+            filtered = [t for t in targets if self._target_in_valid_area(t)]
+            if len(filtered) != len(targets):
+                self.get_logger().debug(
+                    "过滤边缘/不可信目标 %d 个，保留 %d 个"
+                    % (len(targets) - len(filtered), len(filtered)))
+            targets = filtered
 
         # 抓取窗口：机械臂/夹具会进入视野并被 YOLO 误检成物料，必须屏蔽
         if self.blank_until and time.time() < self.blank_until:
             self.stat_blank += 1
             return
-        # 可视化：把「贴合旋转框 + 抓取点」画出来写进预览目录（限频，不影响下发）
-        self._maybe_annotate(targets, msg)
         if not targets:
             return
         self.stat_hit += 1
@@ -484,7 +861,21 @@ class SortVisionNode(Node):
                     time.time() - self.lock_time < getattr(C, "SAME_TARGET_LOCK_S", 20.0):
                 return
             self.lock_center = None        # 物料移动了/超时，解除锁定
-        self._fire(top, msg)
+        self._fire(top, stamp, frame)
+
+    def _target_in_valid_area(self, target):
+        x1, y1, x2, y2 = target["bbox"]
+        w, h = x2 - x1, y2 - y1
+        if w < getattr(C, "DET_MIN_BOX_PX", 12) or \
+                h < getattr(C, "DET_MIN_BOX_PX", 12):
+            return False
+        margin = getattr(C, "DET_BORDER_MARGIN_PX", 6)
+        if x1 < margin or y1 < margin or \
+                x2 >= C.IMAGE_WIDTH - margin or y2 >= C.IMAGE_HEIGHT - margin:
+            return False
+        level, _ = camera_model.check_point((x1 + x2) / 2.0,
+                                            (y1 + y2) / 2.0)
+        return level == "ok"
 
     def on_start(self, msg):
         if msg.data:
@@ -517,49 +908,7 @@ class SortVisionNode(Node):
         self.blank_until = now + window + getattr(C, "BLANK_AFTER_DONE_S", 0.8)
         self._publish_state("GRABBING")
 
-    def _maybe_annotate(self, targets, det_msg):
-        """把「贴合旋转框 + 抓取点」画出来写成 last.jpg（限频 ANNOTATE_FPS）。
-
-        为什么写文件而不是自己开 MJPEG 服务：节点里再塞一个 socket 线程，
-        一旦写坏整个业务节点陪葬。写文件 3 行、失败只丢一张图；
-        由 tools/mjpeg_view.py 在 :8001 把它转成网页，那个进程挂了也不影响分拣。
-        """
-        if not getattr(C, "ANNOTATE_ENABLE", False):
-            return
-        now = time.time()
-        fps = float(getattr(C, "ANNOTATE_FPS", 6.0)) or 6.0
-        if now - self._ann_t < 1.0 / fps:
-            return
-        frame = self._pick_frame(det_msg.header.stamp)
-        if frame is None:
-            return
-        self._ann_t = now
-        H, W = frame.shape[:2]
-        items = []
-        for t in sorted(targets, key=lambda d: -d["conf"]):
-            x1, y1, x2, y2 = t["bbox"]
-            roi = frame[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
-            color = None
-            if roi.size:
-                color, _cc = classify_color(roi)
-            gid = None
-            if color:
-                try:
-                    gid = comm.material_id(t["shape"], color)[0]
-                except Exception:
-                    gid = None
-            items.append({"shape": t["shape"], "conf": t["conf"],
-                          "bbox": t["bbox"], "color": color, "gid": gid})
-        try:
-            img = annotate.draw_targets(frame, items)
-            annotate.save_jpeg(os.path.join(C.ANNOTATE_DIR, "last.jpg"), img,
-                               getattr(C, "ANNOTATE_QUALITY", 80))
-            self._ann_n += 1
-        except Exception as e:                 # 写图失败绝不能影响分拣
-            if self._ann_n < 3:
-                self.get_logger().warn("标注图写入失败: %s" % e)
-
-    def _log_scan(self, targets, det_msg):
+    def _log_scan(self, targets, stamp, frame):
         """把这一帧的识别结果打出来（形状/颜色/像素/毫米），带两点稳定化：
 
         1) 同帧去重：模型偶尔给同一个物料出两个框（相距十几像素、形状还不一样），
@@ -572,7 +921,6 @@ class SortVisionNode(Node):
         if now - self.last_scan_t < self.scan_interval:
             return
         self.last_scan_t = now
-        frame = self._pick_frame(det_msg.header.stamp)
 
         raw = []
         for t in sorted(targets, key=lambda d: -d["conf"]):
@@ -615,8 +963,13 @@ class SortVisionNode(Node):
         self.get_logger().info("[扫描] %d 个目标: %s"
                                % (len(parts), " | ".join(parts) if parts else "无"))
 
-    def _fire(self, target, det_msg):
-        frame = self._pick_frame(det_msg.header.stamp)
+    def _fire(self, target, stamp, frame):
+        if not self.homed:
+            self.get_logger().warn(
+                "等 STM32 归零完成 OK，暂不下发第一颗物料",
+                throttle_duration_sec=5.0)
+            self._publish_state("WAIT_HOME")
+            return
         if frame is None:
             self.get_logger().warn("有检测但无图像帧，跳过（图像话题没收到？）")
             return
@@ -707,8 +1060,7 @@ class SortVisionNode(Node):
                                 prefix="[预演]")
             # 仍然发一条 result 供调试，但显式标记 blocked，下游应丢弃
             self.pub_result.publish(String(data=json.dumps({
-                "stamp": "%d.%09d" % (det_msg.header.stamp.sec,
-                                      det_msg.header.stamp.nanosec),
+                "stamp": "%d.%09d" % (stamp.sec, stamp.nanosec),
                 "shape": target["shape"], "color": color,
                 "conf": round(target["conf"], 3),
                 "pixel": [round(cx, 1), round(cy, 1)],
@@ -730,8 +1082,7 @@ class SortVisionNode(Node):
 
         mid = comm.material_id(target["shape"], color)[0]
         payload = {
-            "stamp": "%d.%09d" % (det_msg.header.stamp.sec,
-                                  det_msg.header.stamp.nanosec),
+            "stamp": "%d.%09d" % (stamp.sec, stamp.nanosec),
             "shape": target["shape"],
             "shape_cn": C.SHAPE_NAMES_CN.get(target["shape"], target["shape"]),
             "shape_id": comm.SHAPE_ID.get(target["shape"], 255),
@@ -747,6 +1098,12 @@ class SortVisionNode(Node):
             "grasp": None if gp is None else {
                 "ok": gp["ok"], "mode": gp["mode"], "method": gp["method"],
                 "tight_bbox": gp["tight_bbox"],
+                "rect_points": (None if gp.get("rect_points") is None else
+                                [[round(float(px), 1), round(float(py), 1)]
+                                 for px, py in gp["rect_points"]]),
+                "rect_size": (None if gp.get("rect_size") is None else
+                              [round(float(gp["rect_size"][0]), 1),
+                               round(float(gp["rect_size"][1]), 1)]),
                 "fill": round(gp["fill"], 3),
                 "coverage": round(gp["coverage"], 3),
                 "solidity": round(gp["solidity"], 3),
@@ -847,13 +1204,12 @@ class SortVisionNode(Node):
         self.get_logger().info(
             "统计: 检测消息=%d 含目标=%d 下发=%d 屏蔽=%d 颜色失败=%d "
             "安全闸拦截=%d 串口失败=%d 边缘外推=%d 抓取点精修=%d/%d 帧缓存=%d "
-            "busy=%s 串口=%s"
+            "本地推理=%.1fms busy=%s 串口=%s"
             % (self.stat_det, self.stat_hit, self.stat_fire, self.stat_blank,
                self.stat_color_fail, self.stat_blocked, self.stat_send_fail,
                self.stat_edge, self.stat_refine_ok, self.stat_refine_fb,
-               len(self.frames), self.busy,
-               "模拟" if self.serial_sim else
-               ("正常" if self.serial_ok else "故障")))
+               len(self.frames), self.stat_infer_ms, self.busy,
+               self._serial_state_text()))
 
     def destroy_node(self):
         if self.serial_worker:
