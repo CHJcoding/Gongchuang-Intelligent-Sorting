@@ -7,6 +7,16 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdint.h>
+
+
+
+typedef enum {
+    SCREEN_CMD_UPDATE_ROW,  // 更新整行（新物料）
+    SCREEN_CMD_ADD_COUNT  // 抓取成功：只更新数量+1
+} ScreenCmdType_t;
+
+
 
 /* 发送控件 */
 void screen_send_text(const char *obj, const char *txt);

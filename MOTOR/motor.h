@@ -17,7 +17,17 @@ HAL_StatusTypeDef Chassis_SetZeroPositions(void);
 HAL_StatusTypeDef Chassis_Init(void);
 static uint32_t Chassis_DistanceToPulses(uint32_t distance_mm);
 
+//用于测试和中间放置耦合 freertos若调用 是为了测试用
 HAL_StatusTypeDef Chassis_MoveTo(float x_mm, float y_mm, uint16_t vel_rpm, uint8_t acc);
+HAL_StatusTypeDef Z_MoveTo(float z_mm, uint16_t vel_rpm, uint8_t acc);
+
+//拥有运动+延迟的功能！实际调用这个
+void Chassis_MoveToAndWait(float x_mm, float y_mm, uint16_t vel_rpm, uint8_t acc);
+void Z_MoveToAndWait(float z_mm, uint16_t vel_rpm, uint8_t acc);
+
+//垃圾桶旋转
+void Abs_Pluse2Angle(float angle);
+HAL_StatusTypeDef Spin_position(int position);
 
 #if Handeye_calibration
 /* 查询 A/B 实时位置，并通过 USB CDC 发送一行 ASCII 数据 */

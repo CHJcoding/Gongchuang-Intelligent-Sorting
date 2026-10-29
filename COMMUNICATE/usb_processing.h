@@ -9,6 +9,7 @@ typedef struct {
     uint8_t M_color_id;
     int16_t M_x;
     int16_t M_y;
+    uint8_t row;    // 【新增】当前是第几行（供运动任务控制放置位）
 }comm_vision_t;
 
 extern comm_vision_t g_vision_Data;

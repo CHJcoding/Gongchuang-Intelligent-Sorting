@@ -11,6 +11,7 @@
 "elec-control_cj\ssd1306.o"
 "elec-control_cj\ssd1306_fonts.o"
 "elec-control_cj\oled.o"
+"elec-control_cj\button.o"
 "elec-control_cj\startup_stm32h723xx.o"
 "elec-control_cj\main.o"
 "elec-control_cj\gpio.o"

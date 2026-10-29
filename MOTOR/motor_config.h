@@ -5,13 +5,35 @@
 //手眼标定是否打开
 #define Handeye_calibration 1
 
+/* ============================================================
+ *  实际位置参数
+ * ============================================================ */
+ /* 分拣动作物理参数 */
+ #define Z_SAFE_HEIGHT       5.0f   // Z轴安全高度（抬起，负数代表向上）
+#define Z_PICK_HEIGHT        10.0f   // Z轴抓取高度（下探，正数代表向下）
+#define Z_PLACE_HEIGHT       15.0f   // Z轴放置高度
+
+#define XY_VEL              150U     // XY 移动速度 (RPM)
+#define XY_ACC              40U      // XY 加速度
+#define Z_VEL               200U     // Z 移动速度 (RPM)
+#define Z_ACC               40U      // Z 加速度
+
+//点位x 和点位y 放置点
+#define PUT_PLACE_X            0.0f    // 放置区中心 X 坐标
+#define PUT_PLACE_Y            200.0f    // 放置区中心 Y 坐标
+
+//过度点
+#define PUT_TRANSITION_PLACE_X  0.0f
+#define PUT_TRANSITION_PLACE_Y  160.0f 
+
+
 
 /* ========== 电机地址 ========== */
 #define A_MOTOR_ADDR    1U
 #define B_MOTOR_ADDR    2U
 #define Z_MOTOR_ADDR    3U
-#define CHASSIS_MOTOR_COUNT 3U
-
+#define SPIN_MOTOR_ADDR     4U  //用于旋转
+#define CHASSIS_MOTOR_COUNT 4U
 /* ============================================================
  *  驱动器 / 电机基础参数（所有轴共用）
  * ============================================================ */
@@ -54,15 +76,24 @@
 #define COREXY_STEPS_PER_MM   \
     ((float)MOTOR_PULSES_PER_REV * XY_GEAR_RATIO / XY_PULLEY_CIRCUM_MM)
 
-    
 /* ============================================================
- *  运动默认值（Chassis_MoveTo 不传参时用）
+ *  Z 轴机械参数（齿轮齿条）
  * ============================================================ */
-#define XY_VEL_RPM_DEF   300U    /* 走得远那一轴的速度上限 */
-#define XY_ACC_DEF       50U     /* 0~255，0 是“直接启动”，不要用 0 */
-#define Z_VEL_RPM_DEF         300U
-#define Z_ACC_DEF             50U
-    
+/* 请根据你实际买的齿轮修改下面两个值 */
+#define Z_GEAR_MODULE         1.0f      // 齿轮模数
+#define Z_GEAR_TEETH          34.0f     // 齿轮齿数 36 * pai 
+
+/* 齿轮节圆直径 = 模数 × 齿数 */
+#define Z_GEAR_DIAMETER_MM    (Z_GEAR_MODULE * Z_GEAR_TEETH)
+/* 齿轮转一圈齿条走的距离（节圆周长） = π × 直径 */
+#define Z_GEAR_CIRCUM_MM      (MOTOR_PI * Z_GEAR_DIAMETER_MM)
+
+/* Z轴减速比（电机直连齿轮填1.0） */
+#define Z_GEAR_RATIO          1.0f
+
+/* Z 轴每毫米对应的脉冲数 */
+#define Z_STEPS_PER_MM        ((float)MOTOR_PULSES_PER_REV * Z_GEAR_RATIO / Z_GEAR_CIRCUM_MM)
+
     
 /* ============================================================
  *  数学常量

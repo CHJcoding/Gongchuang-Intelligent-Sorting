@@ -22,13 +22,22 @@ void buzzer_PWM(uint8_t high, uint8_t low)
     for(int i = low; i < high; i++)
       {
         TIM12->CCR2 = i;
-          HAL_Delay(10);
+          osDelay(10);
        }
       for(int j = high; j > low; j--)
       {
         TIM12->CCR2 = j;
-          HAL_Delay(10);
+          osDelay(10);
        }
 }
 
+void buzzer_finish_flag(int j)
+{
+    for (int i = 0; i < j ; i++)
+    {
+        buzzer_Open();
+        osDelay(100);
+        buzzer_Close();
+    }   
+}
 

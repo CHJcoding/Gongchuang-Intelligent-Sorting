@@ -118,10 +118,8 @@ int main(void)
   
     USER_CAN1_Init();
     
-    // ������3��������ؼ��
     Battery_Init(); 
     
-    // ������4������ TIM13 �ж� (ǰ�������� CubeMX ������ TIM13)
     HAL_TIM_Base_Start_IT(&htim13); 
   /* USER CODE END 2 */
 

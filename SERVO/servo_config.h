@@ -16,16 +16,25 @@
 
 //舵机20kg款，PWM500US - 2500US   
 //逆时针！对应：500作为0°，1850则为180°，2500为270°（最大）1175为90° 不是算的很精细   
-#define SERVO_ADDR1            1U
-#define SERVO_ADDR2            2U
-#define VALVE_SERVO3_ID        3U
-#define PUMP_SERVO4_ID         4U
+#define SERVO_ADDR1            1U                   //夹爪部分
+#define SERVO_ADDR2            2U                   //      无用！
+#define VALVE_SERVO3_ID        3U                   //电流阀
+#define PUMP_SERVO4_ID         4U                   //气泵
 
 #define SERVO_COUNT            4U
 
 /* Servo 1/2 return to the middle position at startup. */
-#define SERVO1_SAFE_PULSE      500U            //后期调整
-#define SERVO2_SAFE_PULSE      1500U            //后期调整
+#define SERVO1_SAFE_PULSE      1500U            //夹爪的安全脉冲就是松开
+#define SERVO1_RELEASE         1500U            //调整完毕 
+#define SERVO1_GRIP            1100U             //调整完毕 
+
+#define SERVO2_SAFE_PULSE      1500U            //后期调整(用于底座调整)
+
+//无编码器(目前改为张大头控制) 用不到
+#define SERVO2_MAX             4500U    //2500
+#define SERVO2_MIN              500U
+
+
 
 /* 气泵安全脉冲参数（初始化调用）. */
 #define SERVO3_SAFE_PULSE      PNEUMATIC_OFF_PULSE_US

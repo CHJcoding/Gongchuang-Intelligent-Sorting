@@ -75,12 +75,12 @@ elec-control_cj\freertos.o: ../GPIO_CONTROL/led.h
 elec-control_cj\freertos.o: ../Core/Inc/spi.h
 elec-control_cj\freertos.o: ../SERVO/servo.h
 elec-control_cj\freertos.o: ../SERVO/servo_config.h
+elec-control_cj\freertos.o: ../MOTOR/motor.h
+elec-control_cj\freertos.o: ../MOTOR/motor_config.h
 elec-control_cj\freertos.o: ../MOTOR/Emm_V5.h
 elec-control_cj\freertos.o: ../MOTOR/ZDT_CAN.h
 elec-control_cj\freertos.o: ../Core/Inc/fdcan.h
 elec-control_cj\freertos.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdbool.h
-elec-control_cj\freertos.o: ../MOTOR/motor.h
-elec-control_cj\freertos.o: ../MOTOR/motor_config.h
 elec-control_cj\freertos.o: ../SCREEN/screen.h
 elec-control_cj\freertos.o: ../Core/Inc/usart.h
 elec-control_cj\freertos.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdarg.h
@@ -90,3 +90,4 @@ elec-control_cj\freertos.o: ..\OLED\OLED.h
 elec-control_cj\freertos.o: ..\OLED\ssd1306.h
 elec-control_cj\freertos.o: ..\OLED\ssd1306_conf.h
 elec-control_cj\freertos.o: ..\OLED\ssd1306_fonts.h
+elec-control_cj\freertos.o: ..\BUTTON\BUTTON.h

@@ -3,9 +3,12 @@
 
 #include "tim.h"
 #include "servo_config.h"
+#include "cmsis_os2.h"
+#include "motor.h"
 
 void Servo_Init(void);
 void Servo_SetPulse(uint8_t id, uint16_t us);
+
 
 void Pneumatic_On(void);
 void Pneumatic_Off(void);

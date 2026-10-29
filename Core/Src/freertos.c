@@ -37,19 +37,13 @@
 #include "screen_config.h"
 #include "battery_driver.h"
 
-//#include "ssd1306.h"
-//#include "ssd1306_fonts.h"
-//#include <stdio.h>
 #include "OLED.h"
+#include "BUTTON.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
-typedef enum {
-    SCREEN_CMD_UPDATE_ROW,  // 更新整行（新物料）
-    SCREEN_CMD_ADD_COUNT  // 抓取成功：只更新数量+1
-} ScreenCmdType_t;
 
 typedef struct {
     ScreenCmdType_t type; // 操作类型
@@ -63,9 +57,9 @@ typedef struct {
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define PNEUMATIC_TEST_ENABLE   0U
-#define CHASSIS_TEST_ENABLE     0U
+#define CHASSIS_TEST_ENABLE     1U
 #define COMM_TASK_TEST_ENABLE   0U
-#define MOTOR_POSITION_REPORT_ENABLE 1U
+#define MOTOR_POSITION_REPORT_ENABLE 0U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -235,20 +229,24 @@ void StartDefaultTask(void *argument)
   /* USER CODE BEGIN StartDefaultTask */
 
     WS2812_Init();
-
-//    //蓝色亮度为100共255，亮200ms灭800ms
-    WS2812_Blink(0, 0, 255, 100, 200, 800);
-
     Servo_Init();
     OLED_Init();
+    Chassis_Init();
+    
+    //* 2. 初始状态：亮蓝灯闪烁（等待按键） *//
+    WS2812_Blink(0, 0, 255, 100, 200, 800); // 亮度100，亮500ms灭500ms
+    
     
     #if PNEUMATIC_TEST_ENABLE
-      for (uint32_t cycle = 0U; cycle < 10; cycle++)
+      for (uint32_t cycle = 0U; cycle < 1; cycle++)
       {
           //Servo_SetPulse(1, 500);  
           //osDelay(3000U);         
-          Servo_SetPulse(1, 2500);  
-          osDelay(3000U);
+//          Servo_SetPulse(1, SERVO1_GRIP);  
+//            osDelay(3000U); 
+//          Servo_SetPulse(1, SERVO1_RELEASE);  
+//          osDelay(3000U);
+                
 
       }
 
@@ -258,8 +256,10 @@ void StartDefaultTask(void *argument)
   /* Test complete. Keep the task idle without changing the outputs. */
   for (;;)
   {
-    OLED_UpdataScreen();
-    osDelay(10U);
+      Button_Handler();
+      WS2812_Update();
+      OLED_UpdataScreen();
+      osDelay(10U);
   }
   /* USER CODE END StartDefaultTask */
 }
@@ -277,7 +277,6 @@ void CommTask(void *argument)
     USB_RxPacket_t rxPacket;
     comm_vision_t v_data;
 
-    char tx_buf[64];
   /* Infinite loop */
   for(;;)
   {
@@ -289,7 +288,7 @@ void CommTask(void *argument)
           cmd_handle(rxPacket.buffer, rxPacket.len);
 
           //3. 打包丢给逻辑大任务
-          if(g_vision_Data.M_shape_id <= NAME_TOTAL && g_vision_Data.M_color_id <= COLOR_TOTAL)
+          if(g_vision_Data.M_shape_id < NAME_TOTAL && g_vision_Data.M_color_id < COLOR_TOTAL)
           {
             
                v_data.M_shape_id = g_vision_Data.M_shape_id;
@@ -331,19 +330,7 @@ void IndicatorTask(void *argument)
   /* USER CODE BEGIN IndicatorTask */
     
     comm_vision_t target_pos;
-    
-    Chassis_Init();
-    osDelay(1000);
-    
-    #if CHASSIS_TEST_ENABLE
-        Chassis_Init();
-        osDelay(200);
-        
-         /* 从 (0,0) 开始 */
-        Chassis_SetZeroPositions();
-        osDelay(200U);
-    #endif
-    
+
   /* Infinite loop */
   for(;;)
   {
@@ -353,12 +340,16 @@ void IndicatorTask(void *argument)
          * 预期：只有 A 电机转，B 不动
          * 反了：改 A_DIR_SIGN
          */
-        Chassis_MoveTo(50.0f, 100.0f, 100U, 30U);   // A=B=800，两电机同向
-        osDelay(1500U);
+        Z_MoveTo(20.0f, 100U, 30U);   // A=B=800，两电机同向
+        osDelay(3000U);
 
         /* ---------- 2. 回原点 ---------- */
-        Chassis_MoveTo(0.0f, 0.0f, 100U, 30U);
-        osDelay(1500U);
+        Z_MoveTo(0.0f, 100U, 30U);
+        osDelay(2000U);
+      //osDelay(1500U);
+      //Chassis_MoveToAndWait(0.0f, 30.0f, XY_VEL, XY_ACC);
+      //Chassis_MoveToAndWait(0.0f, 0.0f, XY_VEL, XY_ACC);
+      
       #endif
       
       //1. 阻塞等待运动指令
@@ -366,34 +357,59 @@ void IndicatorTask(void *argument)
       {
           // --- 放置实际电机、舵机动作 ---
           
-          //1. 移动到目标位置
-          //Chassis_MoveTo(target_pos.M_x, target_pos.M_y, 100U, 30U);
+          // ==========================================
+          // 阶段 1：准备抓取
+          // ==========================================
+          // 1. 确保 Z 轴在安全高度（防止平移时撞机）
+          Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+          
+          // 2. XY 移动到物料上方
+          Chassis_MoveToAndWait(target_pos.M_x, target_pos.M_y, XY_VEL, XY_ACC);
           
           //2. 下降 吸盘吸取并且舵机抓取
-          // ...
-          // Pneumatic_AllOn(); 
+          Z_MoveToAndWait(Z_PICK_HEIGHT, Z_VEL, Z_ACC);
           
-          osDelay(500); //模拟动作延迟
+          // ==========================================
+          // 阶段 2：抓取动作
+          // ==========================================
+          // 打开吸盘 / 舵机夹紧
+          Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
+          osDelay(1000);
+          Pneumatic_On(); 
+          osDelay(500);     //加一点延迟放置吸不上
           
           //3. 抬起 / 归位
-          // ...
+           Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
           
-          //4. 移动到放置区域
-          //Chassis_MoveTo(放置位x, 放置位Y, 100U, 30U);
+          //4. 移动到放置区域（需要考虑过度点）
+          // Chassis_MoveToAndWait(PUT_TRANSITION_PLACE_X, PUT_TRANSITION_PLACE_Y, XY_VEL, XY_ACC);
+          Chassis_MoveToAndWait(PUT_PLACE_X, PUT_PLACE_Y, XY_VEL, XY_ACC);
           
-          //5. 关闭吸盘和舵机抓取
-          // ...
-          //Pneumatic_AllOff(); 
+          //5. 垃圾桶旋转
+          Spin_position(target_pos.row - 1);
           
-          //6.发送标志位 切计数成功
-          // ...
+          //6. z轴下降到放置高度
+          Z_MoveToAndWait(Z_PLACE_HEIGHT, Z_VEL, Z_ACC);
           
-          //7.可以加入释放信号量，告诉MainTask抓完了
+          
+          //7. 关闭吸盘 / 舵机松开
+          Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
+          osDelay(1000);
+          Pneumatic_Off();
+          osDelay(500);     //加一点延迟放置吸不上
+          
+          //8. 最后抬起 Z 轴，回到安全高度，准备下次任务
+            Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+          
+          //10.可以滴滴两声（灯光变色等等）
+          
+          
+          //11.可以加入释放信号量，告诉MainTask抓完了
           osSemaphoreRelease(MotionDoneSemHandle);
       }
       
       #if MOTOR_POSITION_REPORT_ENABLE
-      
+      //测试阶段专用：如果你要读位置，就把这句加上，平时务必关掉
         Chassis_DisableAll();
       
         Chassis_ReportRealPos();
@@ -467,9 +483,10 @@ void MainTask(void *argument)
             
             if (current_row > 6) 
             {
-                    task_finished = true;
-                    // 可以给屏幕发个“任务完成”的提示
-                    continue; 
+                task_finished = true;
+                 buzzer_finish_flag(3);
+                
+                continue; 
             }
             
             last_shape = current_vision.M_shape_id;
@@ -481,12 +498,17 @@ void MainTask(void *argument)
             osMessageQueuePut(ScreenQueueHandle, &smsg, 0, 0);
         }
         
-        //3.通知运动任务区抓取
+        
+        // 3. 通知运动任务区抓取（把行号直接塞进 current_vision）
+        current_vision.row = current_row;  // 打上行号补丁
         osMessageQueuePut(MotionQueueHandle, &current_vision, 0, 0);
         
         //4.大任务在这里挂起，等待运动完成
         //永远等待信号量，只有当MotionTask 抓完了才会被唤醒
-        osSemaphoreAcquire(MotionDoneSemHandle, osWaitForever);
+        if (osSemaphoreAcquire(MotionDoneSemHandle, 20000U) != osOK) 
+        {
+            // 进入错误状态：复位电机、通知视觉 "ERR"、亮红灯
+        }
         
         //5.抓取成功，更新计数，通知屏幕
         current_count++;
