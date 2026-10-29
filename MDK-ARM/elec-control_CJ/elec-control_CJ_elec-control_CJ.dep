@@ -1,6 +1,6 @@
 Dependencies for Project 'elec-control_CJ', Target 'elec-control_CJ': (DO NOT MODIFY !)
 CompilerVersion: 5060960::V5.06 update 7 (build 960)::.\ARMCC
-F (..\COMMUNICATE\usb_processing.c)(0x6ADC2F70)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\usb_processing.o --omf_browse elec-control_cj\usb_processing.crf --depend elec-control_cj\usb_processing.d)
+F (..\COMMUNICATE\usb_processing.c)(0x6AE380C4)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\usb_processing.o --omf_browse elec-control_cj\usb_processing.crf --depend elec-control_cj\usb_processing.d)
 I (..\COMMUNICATE\usb_processing.h)(0x6AE20095)
 I (../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os.h)(0x6AD3213B)
 I (../Drivers/CMSIS/RTOS2/Include/cmsis_os2.h)(0x6AD32120)
@@ -238,8 +238,8 @@ I (D:\Keil_v5\ARM\ARMCC\include\stdarg.h)(0x5F63877C)
 I (..\SCREEN\screen_config.h)(0x6ADC592D)
 F (..\SCREEN\screen.h)(0x6AE20A63)()
 F (..\SCREEN\screen_config.h)(0x6ADC592D)()
-F (..\SERVO\servo.c)(0x6AE19397)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\servo.o --omf_browse elec-control_cj\servo.crf --depend elec-control_cj\servo.d)
-I (..\SERVO\servo.h)(0x6AE1937E)
+F (..\SERVO\servo.c)(0x6AE34CEB)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\servo.o --omf_browse elec-control_cj\servo.crf --depend elec-control_cj\servo.d)
+I (..\SERVO\servo.h)(0x6AE3499B)
 I (../Core/Inc/tim.h)(0x6ADF1DAE)
 I (../Core/Inc/main.h)(0x6AD4451A)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h)(0x6AD32122)
@@ -287,7 +287,7 @@ I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart_ex.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h)(0x6AD32122)
-I (..\SERVO\servo_config.h)(0x6AE1FD83)
+I (..\SERVO\servo_config.h)(0x6AE3592C)
 I (../Drivers/CMSIS/RTOS2/Include/cmsis_os2.h)(0x6AD32120)
 I (../MOTOR/motor.h)(0x6AE1FF0D)
 I (../MOTOR/motor_config.h)(0x6AE1FBD4)
@@ -306,8 +306,8 @@ I (D:\Keil_v5\ARM\ARMCC\include\stdlib.h)(0x5F63877C)
 I (../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_core.h)(0x6AD3213C)
 I (../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_ctlreq.h)(0x6AD3213C)
 I (../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os.h)(0x6AD3213B)
-F (..\SERVO\servo.h)(0x6AE1937E)()
-F (..\SERVO\servo_config.h)(0x6AE1FD83)()
+F (..\SERVO\servo.h)(0x6AE3499B)()
+F (..\SERVO\servo_config.h)(0x6AE3592C)()
 F (..\GPIO_CONTROL\buzzer.c)(0x6AE20639)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\buzzer.o --omf_browse elec-control_cj\buzzer.crf --depend elec-control_cj\buzzer.d)
 I (..\GPIO_CONTROL\buzzer.h)(0x6AE09D4A)
 I (../Core/Inc/tim.h)(0x6ADF1DAE)
@@ -359,8 +359,8 @@ I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h)(0x6AD32122)
 I (../Drivers/CMSIS/RTOS2/Include/cmsis_os2.h)(0x6AD32120)
 F (..\GPIO_CONTROL\buzzer.h)(0x6AE09D4A)()
-F (..\GPIO_CONTROL\led.c)(0x6AD44978)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\led.o --omf_browse elec-control_cj\led.crf --depend elec-control_cj\led.d)
-I (..\GPIO_CONTROL\led.h)(0x6AD448DB)
+F (..\GPIO_CONTROL\led.c)(0x6AE3129F)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\led.o --omf_browse elec-control_cj\led.crf --depend elec-control_cj\led.d)
+I (..\GPIO_CONTROL\led.h)(0x6AE3129B)
 I (../Core/Inc/main.h)(0x6AD4451A)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h)(0x6AD32122)
 I (../Core/Inc/stm32h7xx_hal_conf.h)(0x6ADF1621)
@@ -407,8 +407,18 @@ I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart_ex.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h)(0x6AD32122)
-I (../Core/Inc/spi.h)(0x6AD44518)
-F (..\GPIO_CONTROL\led.h)(0x6AD448DB)()
+I (../Core/Inc/spi.h)(0x6AE30649)
+I (../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h)(0x6AD3213B)
+I (../Core/Inc/FreeRTOSConfig.h)(0x6AD32142)
+I (../Middlewares/Third_Party/FreeRTOS/Source/include/projdefs.h)(0x6AD3213B)
+I (../Middlewares/Third_Party/FreeRTOS/Source/include/portable.h)(0x6AD3213B)
+I (../Middlewares/Third_Party/FreeRTOS/Source/include/deprecated_definitions.h)(0x6AD3213B)
+I (../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F/portmacro.h)(0x6AD3213B)
+I (../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrappers.h)(0x6AD3213B)
+I (../Middlewares/Third_Party/FreeRTOS/Source/include/task.h)(0x6AD3213B)
+I (../Middlewares/Third_Party/FreeRTOS/Source/include/list.h)(0x6AD3213B)
+I (D:\Keil_v5\ARM\ARMCC\include\string.h)(0x5F63878A)
+F (..\GPIO_CONTROL\led.h)(0x6AE3129B)()
 F (..\ADC_POWER\battery_driver.c)(0x6ADF3DB0)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\battery_driver.o --omf_browse elec-control_cj\battery_driver.crf --depend elec-control_cj\battery_driver.d)
 I (..\ADC_POWER\battery_driver.h)(0x6ADF311B)
 I (../Core/Inc/main.h)(0x6AD4451A)
@@ -615,9 +625,9 @@ I (../Drivers/CMSIS/RTOS2/Include/cmsis_os2.h)(0x6AD32120)
 I (../ADC_POWER/battery_driver.h)(0x6ADF311B)
 I (../Core/Inc/main.h)(0x6AD4451A)
 F (..\OLED\OLED.h)(0x6ADF3D50)()
-F (..\BUTTON\BUTTON.c)(0x6AE09696)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\button.o --omf_browse elec-control_cj\button.crf --depend elec-control_cj\button.d)
+F (..\BUTTON\BUTTON.c)(0x6AE38A86)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\button.o --omf_browse elec-control_cj\button.crf --depend elec-control_cj\button.d)
 I (..\BUTTON\BUTTON.h)(0x6AE09D48)
-I (../GPIO_CONTROL/led.h)(0x6AD448DB)
+I (../GPIO_CONTROL/led.h)(0x6AE3129B)
 I (../Core/Inc/main.h)(0x6AD4451A)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h)(0x6AD32122)
 I (../Core/Inc/stm32h7xx_hal_conf.h)(0x6ADF1621)
@@ -664,7 +674,7 @@ I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart_ex.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h)(0x6AD32122)
-I (../Core/Inc/spi.h)(0x6AD44518)
+I (../Core/Inc/spi.h)(0x6AE30649)
 I (../GPIO_CONTROL/buzzer.h)(0x6AE09D4A)
 I (../Core/Inc/tim.h)(0x6ADF1DAE)
 I (../Drivers/CMSIS/RTOS2/Include/cmsis_os2.h)(0x6AD32120)
@@ -680,8 +690,8 @@ I (../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_core.h)(0x6AD3213C)
 I (../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_ctlreq.h)(0x6AD3213C)
 I (../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os.h)(0x6AD3213B)
 F (..\BUTTON\BUTTON.h)(0x6AE09D48)()
-F (startup_stm32h723xx.s)(0x6ADF359A)(--cpu Cortex-M7.fp.dp -g --apcs=interwork --pd "__MICROLIB SETA 1" -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ..\OLED-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include--pd "__UVISION_VERSION SETA 532" --pd "_RTE_ SETA 1" --pd "STM32H723xx SETA 1" --pd "_RTE_ SETA 1"--list startup_stm32h723xx.lst --xref -o elec-control_cj\startup_stm32h723xx.o --depend elec-control_cj\startup_stm32h723xx.d)
-F (../Core/Src/main.c)(0x6AE18FBA)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\main.o --omf_browse elec-control_cj\main.crf --depend elec-control_cj\main.d)
+F (startup_stm32h723xx.s)(0x6AE3064E)(--cpu Cortex-M7.fp.dp -g --apcs=interwork --pd "__MICROLIB SETA 1" -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ..\OLED-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include--pd "__UVISION_VERSION SETA 532" --pd "_RTE_ SETA 1" --pd "STM32H723xx SETA 1" --pd "_RTE_ SETA 1"--list startup_stm32h723xx.lst --xref -o elec-control_cj\startup_stm32h723xx.o --depend elec-control_cj\startup_stm32h723xx.d)
+F (../Core/Src/main.c)(0x6AE3064C)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\main.o --omf_browse elec-control_cj\main.crf --depend elec-control_cj\main.d)
 I (../Core/Inc/main.h)(0x6AD4451A)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h)(0x6AD32122)
 I (../Core/Inc/stm32h7xx_hal_conf.h)(0x6ADF1621)
@@ -740,7 +750,7 @@ I (../Core/Inc/adc.h)(0x6ADF161D)
 I (../Core/Inc/dma.h)(0x6AD38ACC)
 I (../Core/Inc/fdcan.h)(0x6AD3217F)
 I (../Core/Inc/i2c.h)(0x6ADF3595)
-I (../Core/Inc/spi.h)(0x6AD44518)
+I (../Core/Inc/spi.h)(0x6AE30649)
 I (../Core/Inc/tim.h)(0x6ADF1DAE)
 I (../Core/Inc/usart.h)(0x6AD38B0A)
 I (../USB_DEVICE/App/usb_device.h)(0x6AD32142)
@@ -801,7 +811,7 @@ I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart_ex.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h)(0x6AD32122)
-F (../Core/Src/freertos.c)(0x6AE207CE)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\freertos.o --omf_browse elec-control_cj\freertos.crf --depend elec-control_cj\freertos.d)
+F (../Core/Src/freertos.c)(0x6AE380C2)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\freertos.o --omf_browse elec-control_cj\freertos.crf --depend elec-control_cj\freertos.d)
 I (../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h)(0x6AD3213B)
 I (D:\Keil_v5\ARM\ARMCC\include\stddef.h)(0x5F63877C)
 I (D:\Keil_v5\ARM\ARMCC\include\stdint.h)(0x5F63877C)
@@ -872,10 +882,10 @@ I (../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os.h)(0x6AD321
 I (../COMMUNICATE/usb_processing.h)(0x6AE20095)
 I (../GPIO_CONTROL/buzzer.h)(0x6AE09D4A)
 I (../Core/Inc/tim.h)(0x6ADF1DAE)
-I (../GPIO_CONTROL/led.h)(0x6AD448DB)
-I (../Core/Inc/spi.h)(0x6AD44518)
-I (../SERVO/servo.h)(0x6AE1937E)
-I (../SERVO/servo_config.h)(0x6AE1FD83)
+I (../GPIO_CONTROL/led.h)(0x6AE3129B)
+I (../Core/Inc/spi.h)(0x6AE30649)
+I (../SERVO/servo.h)(0x6AE3499B)
+I (../SERVO/servo_config.h)(0x6AE3592C)
 I (../MOTOR/motor.h)(0x6AE1FF0D)
 I (../MOTOR/motor_config.h)(0x6AE1FBD4)
 I (../MOTOR/Emm_V5.h)(0x6AD37313)
@@ -1084,8 +1094,8 @@ I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart_ex.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h)(0x6AD32122)
-F (../Core/Src/spi.c)(0x6AD44AA7)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\spi.o --omf_browse elec-control_cj\spi.crf --depend elec-control_cj\spi.d)
-I (../Core/Inc/spi.h)(0x6AD44518)
+F (../Core/Src/spi.c)(0x6AE30649)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\spi.o --omf_browse elec-control_cj\spi.crf --depend elec-control_cj\spi.d)
+I (../Core/Inc/spi.h)(0x6AE30649)
 I (../Core/Inc/main.h)(0x6AD4451A)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h)(0x6AD32122)
 I (../Core/Inc/stm32h7xx_hal_conf.h)(0x6ADF1621)
@@ -1180,7 +1190,7 @@ I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_uart_ex.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h)(0x6AD32122)
 I (../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h)(0x6AD32122)
-I (../SERVO/servo_config.h)(0x6AE1FD83)
+I (../SERVO/servo_config.h)(0x6AE3592C)
 F (../Core/Src/usart.c)(0x6AD38B0A)(--c99 --gnu -c --cpu Cortex-M7.fp.dp -D__MICROLIB -g -O3 --apcs=interwork --split_sections -I ../Core/Inc -I ../USB_DEVICE/App -I ../USB_DEVICE/Target -I ../Drivers/STM32H7xx_HAL_Driver/Inc -I ../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I ../Middlewares/Third_Party/FreeRTOS/Source/include -I ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I ../Drivers/CMSIS/RTOS2/Include -I ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc -I ../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc -I ../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I ../Drivers/CMSIS/Include -I ../COMMUNICATE -I ../USER -I ../MOTOR -I ../GPIO_CONTROL -I ../SERVO -I ../SCREEN -I ../ADC_POWER -I ..\OLED -I ..\BUTTON --locale=english --multibyte_chars-I.\RTE\_elec-control_CJ-ID:\Users\chg\AppData\Local\Arm\Packs\ARM\CMSIS\5.7.0\CMSIS\Core\Include-D__UVISION_VERSION="532" -D_RTE_ -DSTM32H723xx -D_RTE_ -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx-o elec-control_cj\usart.o --omf_browse elec-control_cj\usart.crf --depend elec-control_cj\usart.d)
 I (../Core/Inc/usart.h)(0x6AD38B0A)
 I (../Core/Inc/main.h)(0x6AD4451A)

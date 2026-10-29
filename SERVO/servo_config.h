@@ -28,10 +28,10 @@
 #define SERVO1_RELEASE         1500U            //调整完毕 
 #define SERVO1_GRIP            1100U             //调整完毕 
 
-#define SERVO2_SAFE_PULSE      1500U            //后期调整(用于底座调整)
+#define SERVO2_SAFE_PULSE      500U            //后期调整(用于底座调整)
 
-//无编码器(目前改为张大头控制) 用不到
-#define SERVO2_MAX             4500U    //2500
+//359°编码器(目前改为张大头控制)[不用] 
+#define SERVO2_MAX              2500U    //2500
 #define SERVO2_MIN              500U
 
 

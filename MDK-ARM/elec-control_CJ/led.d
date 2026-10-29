@@ -48,3 +48,13 @@ elec-control_cj\led.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h
 elec-control_cj\led.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h
 elec-control_cj\led.o: ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h
 elec-control_cj\led.o: ../Core/Inc/spi.h
+elec-control_cj\led.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h
+elec-control_cj\led.o: ../Core/Inc/FreeRTOSConfig.h
+elec-control_cj\led.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/projdefs.h
+elec-control_cj\led.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/portable.h
+elec-control_cj\led.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/deprecated_definitions.h
+elec-control_cj\led.o: ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F/portmacro.h
+elec-control_cj\led.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrappers.h
+elec-control_cj\led.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h
+elec-control_cj\led.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/list.h
+elec-control_cj\led.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h

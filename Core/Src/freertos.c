@@ -57,7 +57,7 @@ typedef struct {
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define PNEUMATIC_TEST_ENABLE   0U
-#define CHASSIS_TEST_ENABLE     1U
+#define CHASSIS_TEST_ENABLE     0U
 #define COMM_TASK_TEST_ENABLE   0U
 #define MOTOR_POSITION_REPORT_ENABLE 0U
 /* USER CODE END PD */
@@ -234,19 +234,21 @@ void StartDefaultTask(void *argument)
     Chassis_Init();
     
     //* 2. 初始状态：亮蓝灯闪烁（等待按键） *//
-    WS2812_Blink(0, 0, 255, 100, 200, 800); // 亮度100，亮500ms灭500ms
-    
+    WS2812_Blink(1, 0, 0, 255, 50, 200, 800); // 亮度50，亮500ms灭500ms
+    WS2812_SetColor(2, 255, 255, 255, 50);
     
     #if PNEUMATIC_TEST_ENABLE
       for (uint32_t cycle = 0U; cycle < 1; cycle++)
       {
-          //Servo_SetPulse(1, 500);  
-          //osDelay(3000U);         
-//          Servo_SetPulse(1, SERVO1_GRIP);  
-//            osDelay(3000U); 
-//          Servo_SetPulse(1, SERVO1_RELEASE);  
+
+          //Servo_SetPulse(1, SERVO1_GRIP);  
+          //osDelay(3000U); 
+          Servo_SetPulse(1, SERVO1_RELEASE);  
+          osDelay(3000U);
+//          Servo_SetPulse(2, SERVO2_MIN);  
 //          osDelay(3000U);
-                
+//          Servo_SetPulse(2, SERVO2_MAX);  
+          
 
       }
 
@@ -340,16 +342,16 @@ void IndicatorTask(void *argument)
          * 预期：只有 A 电机转，B 不动
          * 反了：改 A_DIR_SIGN
          */
-        Z_MoveTo(20.0f, 100U, 30U);   // A=B=800，两电机同向
-        osDelay(3000U);
+//        Z_MoveTo(20.0f, 100U, 30U);   // A=B=800，两电机同向
+//        osDelay(3000U);
 
-        /* ---------- 2. 回原点 ---------- */
-        Z_MoveTo(0.0f, 100U, 30U);
-        osDelay(2000U);
+//        /* ---------- 2. 回原点 ---------- */
+//        Z_MoveTo(0.0f, 100U, 30U);
+//        osDelay(2000U);
       //osDelay(1500U);
-      //Chassis_MoveToAndWait(0.0f, 30.0f, XY_VEL, XY_ACC);
+      //Chassis_MoveToAndWait(10.0f, 127.0f, XY_VEL, XY_ACC);
       //Chassis_MoveToAndWait(0.0f, 0.0f, XY_VEL, XY_ACC);
-      
+      //Chassis_ReportRealPos();
       #endif
       
       //1. 阻塞等待运动指令
@@ -361,45 +363,46 @@ void IndicatorTask(void *argument)
           // 阶段 1：准备抓取
           // ==========================================
           // 1. 确保 Z 轴在安全高度（防止平移时撞机）
-          Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+          //Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
           
           // 2. XY 移动到物料上方
           Chassis_MoveToAndWait(target_pos.M_x, target_pos.M_y, XY_VEL, XY_ACC);
           
           //2. 下降 吸盘吸取并且舵机抓取
-          Z_MoveToAndWait(Z_PICK_HEIGHT, Z_VEL, Z_ACC);
+          //Z_MoveToAndWait(Z_PICK_HEIGHT, Z_VEL, Z_ACC);
           
           // ==========================================
           // 阶段 2：抓取动作
           // ==========================================
           // 打开吸盘 / 舵机夹紧
-          Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
-          osDelay(1000);
-          Pneumatic_On(); 
-          osDelay(500);     //加一点延迟放置吸不上
+          //Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
+          //osDelay(1000);
+          //Pneumatic_On(); 
+          //osDelay(500);     //加一点延迟放置吸不上
           
           //3. 抬起 / 归位
-           Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+          // Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
           
           //4. 移动到放置区域（需要考虑过度点）
           // Chassis_MoveToAndWait(PUT_TRANSITION_PLACE_X, PUT_TRANSITION_PLACE_Y, XY_VEL, XY_ACC);
-          Chassis_MoveToAndWait(PUT_PLACE_X, PUT_PLACE_Y, XY_VEL, XY_ACC);
+          //Chassis_MoveToAndWait(PUT_PLACE_X, PUT_PLACE_Y, XY_VEL, XY_ACC);
           
           //5. 垃圾桶旋转
-          Spin_position(target_pos.row - 1);
+          //Spin_position(target_pos.row - 1);  这个是张大头
+          //Spin_servo_position(target_pos.row - 1);
           
           //6. z轴下降到放置高度
-          Z_MoveToAndWait(Z_PLACE_HEIGHT, Z_VEL, Z_ACC);
+          //Z_MoveToAndWait(Z_PLACE_HEIGHT, Z_VEL, Z_ACC);
           
           
           //7. 关闭吸盘 / 舵机松开
-          Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
-          osDelay(1000);
-          Pneumatic_Off();
-          osDelay(500);     //加一点延迟放置吸不上
+          //Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
+          //osDelay(1000);
+          //Pneumatic_Off();
+          //osDelay(500);     //加一点延迟放置吸不上
           
           //8. 最后抬起 Z 轴，回到安全高度，准备下次任务
-            Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+            //Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
           
           //10.可以滴滴两声（灯光变色等等）
           
@@ -410,9 +413,9 @@ void IndicatorTask(void *argument)
       
       #if MOTOR_POSITION_REPORT_ENABLE
       //测试阶段专用：如果你要读位置，就把这句加上，平时务必关掉
-        Chassis_DisableAll();
+        //Chassis_DisableAll();
       
-        Chassis_ReportRealPos();
+        //Chassis_ReportRealPos();
       #endif
 
       

@@ -9,6 +9,8 @@
 void Servo_Init(void);
 void Servo_SetPulse(uint8_t id, uint16_t us);
 
+//À¬»øÍ°Ðý×ª£¨postition - ÌîÎ»ÖÃ£©
+HAL_StatusTypeDef Spin_servo_position(int position);
 
 void Pneumatic_On(void);
 void Pneumatic_Off(void);
