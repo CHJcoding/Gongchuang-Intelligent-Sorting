@@ -1,0 +1,42 @@
+# 1) 先干跑看检测质量与方向（不写文件）
+cd /root/vision_ws && python3 tools/planar_calib.py --image board.jpg --dry-run --square 24
+
+# 2) 采 3 个锚点：夹爪/针尖依次对准棋盘角点 0 / 8 / 53，每次停稳后采一个
+python3 tools/collect_anchors.py --port /dev/ttyACM0 --corners 0 8 53 --image board.jpg
+#   （串口回传不稳的兜底：改成 --manual，不读串口，每个位置手敲 X Y）
+
+# 3) 正式解算，自动识别镜像/手性，产出 hand_eye.json
+python3 tools/planar_calib.py --image board.jpg --anchors-file anchors.json --square 24
+
+
+第 1 步 · 拍标定图（棋盘格平铺在物料高度、压平、整块入镜、相机别动）
+
+cd /root/vision_ws
+python3 tools/grab_frame.py /dev/video0 && cp -f scene_raw.jpg board.jpg
+
+第 2 步 · 让工具确认棋盘检测得到，并列出 54 个角点的位置
+
+先干跑：
+
+python3 tools/planar_calib.py --image board.jpg --dry-run --square 24
+
+棋盘标点
+python3 - <<'EOF'
+import cv2
+img = cv2.imread('/root/vision_ws/board.jpg')
+g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+ok, pts = cv2.findChessboardCorners(g, (9, 6),
+        cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE)
+print('detected:', ok, 0 if pts is None else len(pts))
+if ok:
+    pts = cv2.cornerSubPix(g, pts, (11, 11), (-1, -1),
+          (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
+    for i, (u, v) in enumerate(pts.reshape(-1, 2)):
+        print('corner %2d  u=%6.1f  v=%6.1f' % (i, u, v))
+EOF
+第 4 步 · 解算（先把 X0 Y0 等换成你记的真值）
+
+python3 tools/planar_calib.py --image board.jpg \
+  --anchor-index 0  --anchor-xy X0 Y0 \
+  --anchor-index 8  --anchor-xy X8 Y8 \
+  --anchor-index 53 --anchor-xy X53 Y53 --dry-run
