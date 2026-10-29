@@ -87,7 +87,7 @@ def test_downlink():
           set(C.SHAPE_NAMES) == set(C.SHAPE_IDS),
           str(set(C.SHAPE_NAMES) - set(C.SHAPE_IDS)))
     check("32 表里有、我们没有的形状已登记",
-          set(C.SHAPE_IDS_MISSING) == {0, 5, 8}, str(C.SHAPE_IDS_MISSING))
+          set(C.SHAPE_IDS_MISSING) == {0, 8}, str(C.SHAPE_IDS_MISSING))
     check("物料号 = 形状*10+颜色 且互不重复",
           len({comm.material_id(s, c)[0] for s in C.SHAPE_IDS
                for c in C.COLOR_IDS}) == len(C.SHAPE_IDS) * len(C.COLOR_IDS))
@@ -1236,7 +1236,7 @@ def test_material_shape_table():
     check("shape_cn 能查回中文名",
           C.shape_cn(0) == "长方体" and C.shape_cn(4) == "圆锥"
           and C.shape_cn(9) == "三棱锥")
-    # 模型 7 类 -> 32 形状号，必须都落在表里
+    # 模型 8 类（1029 v8 版）-> 32 形状号，必须都落在表里
     bad = [k for k, v in C.SHAPE_IDS.items() if C.shape_cn(v) is None]
     check("SHAPE_IDS 的每个形状号都能在权威表里查到", not bad, str(bad))
     check("SHAPE_IDS 映射到的中文名与模型类中文名语义一致",
@@ -1246,17 +1246,19 @@ def test_material_shape_table():
           and C.shape_cn(C.SHAPE_IDS["YZ"]) == "圆柱"
           and C.shape_cn(C.SHAPE_IDS["WLZ"]) == "五棱柱"
           and C.shape_cn(C.SHAPE_IDS["LK"]) == "镂空正方体"
-          and C.shape_cn(C.SHAPE_IDS["SMT"]) == "三棱锥")
-    check("模型缺的 3 个形状 = 长方体/正方体/六棱柱",
-          set(C.SHAPE_IDS_MISSING) == {0, 5, 8}, str(C.SHAPE_IDS_MISSING))
+          and C.shape_cn(C.SHAPE_IDS["SMT"]) == "三棱锥"
+          and C.shape_cn(C.SHAPE_IDS["CUBE"]) == "正方体")
+    check("模型缺的形状 = 长方体/六棱柱",
+          set(C.SHAPE_IDS_MISSING) == {0, 8}, str(C.SHAPE_IDS_MISSING))
     check("模型能用 + 模型缺的 = 表里全部十个形状号",
           set(C.SHAPE_IDS.values()) | set(C.SHAPE_IDS_MISSING) == set(T),
           str(set(C.SHAPE_IDS.values()) | set(C.SHAPE_IDS_MISSING)))
-    # 物料号自检：编号 = 形状*10 + 颜色，,七个可用形状号覆盖的编号段互不重叠
+    # 物料号自检：编号 = 形状*10 + 颜色，可用形状号覆盖的编号段互不重叠
     used = {sid * 10 + cid for sid in C.SHAPE_IDS.values()
             for cid in C.COLOR_IDS.values()}
-    check("七个形状号 -> 七个互不重叠的十位段",
-          len(used) == 7 * len(C.COLOR_IDS)
+    n_shape = len(C.SHAPE_IDS)
+    check("%d 个形状号 -> %d 个互不重叠的十位段" % (n_shape, n_shape),
+          len(used) == n_shape * len(C.COLOR_IDS)
           and all(u // 10 in set(C.SHAPE_IDS.values()) for u in used),
           "%d 个编号" % len(used))
     check("球(2) 的物料号是 20~29",

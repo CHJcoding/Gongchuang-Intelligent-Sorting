@@ -1,0 +1,13 @@
+path: C:/Users/34559/Desktop/GC/new_data
+train: images/train
+val: images/val
+
+names:
+  0: hollow_cube          # 镂空正方体
+  1: tetrahedron          # 正四面体
+  2: pentagonal_prism     # 五棱柱
+  3: triangular_prism    # 三棱柱
+  4: cone                 # 圆锥
+  5: cylinder             # 圆柱
+  6: hemisphere           # 半球
+  7: cube                 # 实心正方体  ← 新增

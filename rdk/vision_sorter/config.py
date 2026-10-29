@@ -22,10 +22,17 @@ YOLO_NUM_CLASSES = 7
 YOLO_CONF_THRES = 0.80
 YOLO_IOU_THRES = 0.45
 # 7 类形状：顺序即 class_id，必须与 best.pt 的 model.names 完全一致
-SHAPE_NAMES = ["BQ", "LK", "SLZ", "SMT", "WLZ", "YZ", "YZHU"]
+# ============ 检测模型类别（2026-10-29 换 YOLOv8 8 类模型）============
+# 顺序必须与模型 labels.list 的**行序**一致：TROS 把标签字符串塞进
+# roi.type，我们板端用的 labels.list 已经改写成下面这套短名，所以
+# 行序 = 类别索引 = SHAPE_NAMES 的下标。
+# 板端文件：/root/vision_ws/gc_1029_labels.list
+#   hollow_cube / tetrahedron / pentagonal_prism / triangular_prism /
+#   cone / cylinder / hemisphere / cube
+SHAPE_NAMES = ["LK", "SMT", "WLZ", "SLZ", "YZHU", "YZ", "BQ", "CUBE"]
 SHAPE_NAMES_CN = {
-    "BQ": "半球", "LK": "镂空正方体", "SLZ": "三棱柱", "SMT": "正四面体",
-    "WLZ": "五棱柱", "YZ": "圆柱", "YZHU": "圆锥",
+    "LK": "镂空正方体", "SMT": "正四面体", "WLZ": "五棱柱", "SLZ": "三棱柱",
+    "YZHU": "圆锥", "YZ": "圆柱", "BQ": "半球", "CUBE": "正方体",
 }
 
 # ============ 物料编号（与 STM32 侧 10x10 表对齐，2026-10-26）============
@@ -43,22 +50,23 @@ SHAPE_NAMES_CN = {
 #   8 六棱柱    80   81   82   83   84   85   86   87   88   89
 #   9 三棱锥    90   91   92   93   94   95   96   97   98   99
 #
-# 我们的检测模型只有 7 类，缺 0(长方体) / 5(正方体) / 8(六棱柱)；
-# BQ 训练时叫"半球"，在 32 的表里落到 2(球)。
-# 2026-10-28 用户确认：球是有的（2 号不是空号），先按这张表写死，
-# 后面换新的 YOLO 模型时把 0/5/8 三类补上即可。
+# 我们的检测模型有 8 类（1029 版比上一版多了 cube 正方体），
+# 仍缺 0(长方体) / 8(六棱柱)；BQ 训练时叫"半球"，在 32 的表里落到 2(球)。
+# 2026-10-28 用户确认：球是有的（2 号不是空号）。
+# 换新模型补 0/8 两类时：改 SHAPE_NAMES / SHAPE_NAMES_CN / SHAPE_IDS 三处即可，
 SHAPE_IDS = {
-    "LK": 1,     # 镂空正方体
-    "BQ": 2,     # 半球 -> 球
-    "SLZ": 3,    # 三棱柱
-    "YZHU": 4,   # 圆锥
-    "YZ": 6,     # 圆柱
-    "WLZ": 7,    # 五棱柱
-    "SMT": 9,    # 正四面体 -> 三棱锥
+    "LK": 1,     # hollow_cube      镂空正方体
+    "BQ": 2,     # hemisphere       半球 -> 球
+    "SLZ": 3,    # triangular_prism 三棱柱
+    "YZHU": 4,   # cone             圆锥
+    "CUBE": 5,   # cube             正方体（1029 版新增）
+    "YZ": 6,     # cylinder         圆柱
+    "WLZ": 7,    # pentagonal_prism 五棱柱
+    "SMT": 9,    # tetrahedron      正四面体 -> 三棱锥
 }
 # 模型里没有、但 32 的表里有的形状（识别不到就会把它们判成别的类，需谨慎）
-# 换新 YOLO 模型后这三类补齐，这里会自动变空（下面有 assert 兜着）。
-SHAPE_IDS_MISSING = {0: "长方体", 5: "正方体", 8: "六棱柱"}
+# 换新 YOLO 模型后这两类补齐，这里会自动变空（下面有 assert 兜着）。
+SHAPE_IDS_MISSING = {0: "长方体", 8: "六棱柱"}
 
 
 # ============ 32 侧接收口径（权威表，2026-10-28 用户给定）============
