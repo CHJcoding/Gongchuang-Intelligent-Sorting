@@ -56,6 +56,9 @@ def main():
         buf += s.read(256)
     s.close()
     print("[回包 %d 字节] %s" % (len(buf), repr(buf[:300])))
+    if b"ERR" in buf.upper():
+        print("[32 拒绝] 坐标超出限位保护（回 ERR）：(%.1f, %.1f) 不可达，"
+              "换个坐标重新识别/下发" % (a.x, a.y))
 
 
 if __name__ == "__main__":

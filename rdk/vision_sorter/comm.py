@@ -100,6 +100,9 @@ def material_id(shape_name, color_name):
 
 # 上行包标识
 DONE_BYTE = int(getattr(C, "GRAB_DONE_BYTE", 0x06))
+ERR_ENABLE = bool(getattr(C, "GRAB_ERR_ENABLE", True))
+ERR_PATTERN = (str(getattr(C, "GRAB_ERR_PATTERN", "ERR")).upper()
+               .encode("ascii", "ignore") or b"ERR")
 POS_HEAD = int(getattr(C, "POS_FRAME_HEAD", 0x07))
 POS_LEN = int(getattr(C, "POS_FRAME_LEN", 6))
 STATUS_NAMES = dict(getattr(C, "GRAB_STATUS_NAMES", {}))
@@ -245,6 +248,8 @@ class Comm:
         self.lock = threading.Lock()      # 写线程(发送) 与 ROS定时器(读完成字节) 共用串口
         self.done_seen = False
         self.done_status = None           # 2 字节协议的结果码；1 字节协议为 None
+        self.err_pending = 0              # 待消费的 ERR 个数（32 回 ERR = 坐标超限）
+        self.err_count = 0                # 累计收到多少次 ERR（排查用）
         self._rx = bytearray()            # 统一接收缓冲（所有上行包共用）
         self.latest_position = None       # (x_mm, y_mm)，只保留最新一帧
         self.position_seq = 0             # 累计收到多少帧坐标（调试/丢帧观察）
@@ -470,6 +475,22 @@ class Comm:
                 i += 1
                 continue
 
+            # ---- 越界保护：文本 "ERR"（32 拒收坐标、不动作）----
+            # 放在 "OK" 之前判断：'E'=0x45 / 'e'=0x65 与 'O' 不撞车。
+            if ERR_ENABLE and b in (0x45, 0x65):        # 'E' / 'e'
+                if n - i < len(ERR_PATTERN):
+                    break                               # 半包，等下一批
+                if bytes(buf[i:i + len(ERR_PATTERN)]).upper() == ERR_PATTERN:
+                    self.err_pending += 1
+                    self.err_count += 1
+                    i += len(ERR_PATTERN)
+                    while i < n and buf[i] in (0x0D, 0x0A, 0x20):   # 吃掉尾随空白
+                        i += 1
+                    continue
+                i += 1
+                continue
+
+
             # ---- 抓取完成：文本 "OK"（STM32 直接 printf("OK") 的情况）----
             # 放在 0x06 之前判断：'O'=0x4F 不会和 0x06/0x07 包头撞车。
             if ascii_mode and b in (0x4F, 0x6F):        # 'O' / 'o'
@@ -534,6 +555,20 @@ class Comm:
             self.done_seen = False
             return True
         return False
+
+    def poll_err(self):
+        """
+        非阻塞检查 32 的越界保护回复 "ERR\r\n"；取到即消费。
+
+        现场：坐标超出 32 的限位保护时它不动作，只回这一行文本。
+        收到后必须立刻解锁 + 重新识别，别等到 GRAB_TIMEOUT_S 超时。
+        """
+        self._pump()
+        if self.err_pending > 0:
+            self.err_pending -= 1
+            return True
+        return False
+
 
     def poll_done_status(self):
         """

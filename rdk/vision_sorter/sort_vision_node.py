@@ -138,6 +138,9 @@ class SortVisionNode(Node):
         self.stat_hit = 0                  # 含有效目标的消息数
         self.stat_fire = 0                 # 实际下发次数
         self.stat_blank = 0                # 因抓取窗口被屏蔽的检测消息数
+        self.stat_reject = 0               # 32 回 ERR 的次数（坐标被限位保护拒收）
+        self.rejects = []                  # [(x_mm, y_mm, t)] 被拒位置黑名单
+        self.last_sent_xy = None           # 最近一次真正下发的 (x, y) mm
         self.stat_color_fail = 0
         self.stat_blocked = 0              # 被安全闸拦下的次数
         self.stat_send_fail = 0            # 串口写失败次数
@@ -513,6 +516,18 @@ class SortVisionNode(Node):
         elapsed = now - self.grab_start
         mode = self.grab_done_mode
 
+        # ---- 32 的越界保护：回 "ERR" = 坐标超限、没动作 ----
+        # 不看这个就只能等 GRAB_TIMEOUT_S 超时，而且会对着同一颗物料反复撞限位。
+        if getattr(C, "GRAB_ERR_ENABLE", True) and self.comm is not None:
+            try:
+                got_err = self.comm.poll_err()
+            except Exception:
+                got_err = False
+            if got_err:
+                self._on_32_err(elapsed)
+                return
+
+
         if mode == "byte":
             if self.comm is not None:
                 if getattr(C, "GRAB_STATUS_ENABLE", False):
@@ -533,6 +548,55 @@ class SortVisionNode(Node):
         else:
             if elapsed >= self.grab_cycle_s:
                 self._end_grab("TIMER", elapsed)
+
+    # ---------------- 32 越界保护（ERR）----------------
+    def _on_32_err(self, elapsed):
+        """
+        32 回 ERR：坐标落在限位保护范围外，它没动作。
+
+        处理：立刻解锁（不等 GRAB_TIMEOUT_S）、把这个位置拉黑一段时间、
+        放开检测重新识别 —— 否则下一轮会把同一颗物料再发一遍，继续撞限位。
+        """
+        self.stat_reject += 1
+        ttl = float(getattr(C, "GRAB_ERR_BLACKLIST_TTL_S", 120.0))
+        r0 = self.last_sent_xy
+        if r0 is not None:
+            self.rejects.append((r0[0], r0[1], time.time()))
+            self.rejects = [r for r in self.rejects
+                            if time.time() - r[2] < ttl]
+            self.get_logger().warn(
+                "32 回 ERR：坐标 (%d,%d) 超出限位保护，未执行（窗口已用 %.2fs）。"
+                "该位置拉黑 %.0fs，重新识别其它物料"
+                % (r0[0], r0[1], elapsed, ttl))
+        else:
+            self.get_logger().warn(
+                "32 回 ERR：坐标超出限位保护，未执行（窗口已用 %.2fs），重新识别"
+                % elapsed)
+        self.busy = False
+        self.lock_center = None
+        self.blank_until = time.time() + float(getattr(C, "BLANK_AFTER_ERR_S", 0.5))
+        self._publish_state("GRAB_ERR")
+
+    def _is_rejected_target(self, target):
+        """该目标（按毫米坐标）是否落在被 32 拒过的位置附近。"""
+        if not self.rejects:
+            return False
+        x1, y1, x2, y2 = target["bbox"]
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        try:
+            cx_u, cy_u = camera_model.undistort_point(cx, cy)
+        except Exception:
+            cx_u, cy_u = cx, cy
+        try:
+            x_mm, y_mm, _ = pixel_to_robot(cx_u, cy_u)
+        except Exception:
+            return False
+        rad = float(getattr(C, "GRAB_ERR_BLACKLIST_MM", 30.0))
+        for r in self.rejects:
+            if (x_mm - r[0]) ** 2 + (y_mm - r[1]) ** 2 <= rad * rad:
+                return True
+        return False
+
 
     def _poll_gantry_pos(self):
         """取 STM32 回传的夹爪坐标并发话题（POS_ENABLE=False 时直接返回）。"""
@@ -833,6 +897,21 @@ class SortVisionNode(Node):
                     % (len(targets) - len(filtered), len(filtered)))
             targets = filtered
 
+        # 被 32 限位保护拒过的位置：拉黑期内不再下发（否则同一颗物料反复撞 ERR）
+        if self.rejects:
+            ttl = float(getattr(C, "GRAB_ERR_BLACKLIST_TTL_S", 120.0))
+            now_r = time.time()
+            self.rejects = [r for r in self.rejects if now_r - r[2] < ttl]
+            kept = [t for t in targets if not self._is_rejected_target(t)]
+            if len(kept) != len(targets):
+                self.get_logger().debug(
+                    "跳过被 32 拒过的位置 %d 个，保留 %d 个"
+                    % (len(targets) - len(kept), len(kept)))
+            targets = kept
+            if not targets:
+                return
+
+
         # 抓取窗口：机械臂/夹具会进入视野并被 YOLO 误检成物料，必须屏蔽
         if self.blank_until and time.time() < self.blank_until:
             self.stat_blank += 1
@@ -1076,6 +1155,7 @@ class SortVisionNode(Node):
         self.stat_fire += 1
         self.lock_center = (cx, cy)        # 锁定该物料，防重复下发
         self.lock_time = now
+        self.last_sent_xy = (int(round(x_mm)), int(round(y_mm)))
         self._begin_grab(now)              # 进入抓取窗口，期间屏蔽检测
         if not self.auto_trigger:
             self.armed = False          # 单次触发模式：发一次就不再自动触发
@@ -1202,11 +1282,12 @@ class SortVisionNode(Node):
     def on_timer(self):
         self._try_reopen_serial()
         self.get_logger().info(
-            "统计: 检测消息=%d 含目标=%d 下发=%d 屏蔽=%d 颜色失败=%d "
+            "统计: 检测消息=%d 含目标=%d 下发=%d 屏蔽=%d 拒绝=%d 颜色失败=%d "
             "安全闸拦截=%d 串口失败=%d 边缘外推=%d 抓取点精修=%d/%d 帧缓存=%d "
             "本地推理=%.1fms busy=%s 串口=%s"
             % (self.stat_det, self.stat_hit, self.stat_fire, self.stat_blank,
-               self.stat_color_fail, self.stat_blocked, self.stat_send_fail,
+               self.stat_reject, self.stat_color_fail, self.stat_blocked,
+               self.stat_send_fail,
                self.stat_edge, self.stat_refine_ok, self.stat_refine_fb,
                len(self.frames), self.stat_infer_ms, self.busy,
                self._serial_state_text()))

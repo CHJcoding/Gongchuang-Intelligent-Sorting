@@ -310,6 +310,15 @@ GRAB_DONE_BYTE = 0x06      # byte 模式：完成字节（与 ACK_BYTE 同值也
 GRAB_DONE_ACCEPT_ASCII = True
 GRAB_TIMEOUT_S = 20.0      # 兜底：超时强制解锁，防止永久卡死（一个完整搬运周期留足）
 BLANK_AFTER_DONE_S = 0.8   # 抓完后再屏蔽这么久（等机械臂收回、离开视野）
+# ---- 32 的越界保护（ERR）----
+# 现场约定：下发的坐标落在 32 的限位保护范围外时，32 不动作，回文本 "ERR\r\n"。
+# 必须识别它：否则节点会白等到 GRAB_TIMEOUT_S(20s) 才解锁，而且会对着同一颗物料
+# 反复撞限位。收到 ERR 后除了立刻解锁，还要把那个位置临时拉黑。
+GRAB_ERR_ENABLE = True            # 是否识别 32 的 ERR 回复
+GRAB_ERR_PATTERN = "ERR"          # 匹配文本（大小写不敏感，允许后面跟 \r\n）
+GRAB_ERR_BLACKLIST_MM = 30.0      # 被拒位置周围这么多 mm 内的目标不再下发
+GRAB_ERR_BLACKLIST_TTL_S = 120.0  # 拉黑保留时长（物料被搬走后自然失效）
+BLANK_AFTER_ERR_S = 0.5           # 收到 ERR 后屏蔽检测的时长（等机械臂停稳）
 GRAB_BLANK_DETECT = True   # 抓取期间忽略检测：机械臂进入视野会被误检成物料
 SEND_WAIT_ACK = False      # False = 发完就走，不等帧级 ACK（你现在的方案）
 
