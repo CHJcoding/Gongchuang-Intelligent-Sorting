@@ -20,7 +20,10 @@ def _vote(hsv_roi, chiral_mask=None):
     （实测绿料 conf 只有 0.60，正好压在判色下限上，会随机判失败）。
     """
     scores = {}
+    disabled = getattr(C, "COLOR_DISABLED", frozenset())
     for name, (lo, hi) in C.COLOR_RANGES_HSV.items():
+        if name in disabled:
+            continue        # 被屏蔽的颜色不参评（如黑色夹爪原地空抓）
         m = cv2.inRange(hsv_roi, np.array(lo), np.array(hi))
         if name == "red":
             m2 = cv2.inRange(hsv_roi,
@@ -62,6 +65,8 @@ def classify_color(bgr_roi, verbose=False):
     else:
         scores = _vote(hsv)
         basis = "all pixels (chromatic only %.0f%%)" % (chiral_frac * 100)
+    if not scores:
+        return None, 0.0
     ordered = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     top_name, top_cnt = ordered[0]
     second_cnt = ordered[1][1] if len(ordered) > 1 else 0
