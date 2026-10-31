@@ -695,7 +695,8 @@ def test_grasp_refine():
         return tuple(int(c) for c in cv2.cvtColor(
             np.uint8([[[h, s, v]]]), cv2.COLOR_HSV2BGR)[0, 0])
 
-    GREEN = hsv_bgr(60, 200, 200)
+    # 板端相机白平衡把绿料推到 H≈88~95，纯 RGB 绿(H=60) 现场拍不出来
+    GREEN = hsv_bgr(90, 150, 135)
     BLUE = hsv_bgr(110, 200, 200)
     WHITE = (255, 255, 255)
 

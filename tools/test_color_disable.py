@@ -45,7 +45,9 @@ np.random.seed(0)
 # 允许的两种
 keep = {
     "红(30,30,200)": ("red", patch(30, 30, 200)),
-    "绿(40,190,40)": ("green", patch(40, 190, 40)),
+    # 相机不是"纯 RGB 绿"：板端相机白平衡把绿料推到 H≈88~95（见 2026-10-31 实测）
+    "绿 相机实测 H90 S150 V135": ("green", hsv_patch(90, 150, 135)),
+    "绿 偏亮 H95 S120 V150": ("green", hsv_patch(95, 120, 150)),
 }
 # 必须屏蔽的
 drop = {
@@ -58,7 +60,8 @@ drop = {
     "黄(30,220,220)": patch(30, 220, 220),
     "粉 H160": hsv_patch(160, 70, 230),
     "冷白背景 H100 S45 V220": hsv_patch(100, 45, 220),
-    "偏青绿 H88": hsv_patch(88, 120, 180),
+    "暗青件 H108 V60(台面下沿)": hsv_patch(108, 160, 60),
+    "偏青蓝 H112": hsv_patch(112, 160, 120),
 }
 
 print("COLOR_ALLOWED  = %s" % (getattr(C, "COLOR_ALLOWED", None),))
@@ -75,7 +78,7 @@ for label, img in drop.items():
     check(label + " 判色失败", name is None, "实际 %r" % ((name, conf),))
 
 # 混框：冷白背景 + 中间一颗真料（旧逻辑这里会被判成 blue）
-for want, hsv_block in (("green", (60, 120, 180)), ("red", (177, 150, 200))):
+for want, hsv_block in (("green", (90, 150, 135)), ("red", (177, 150, 200))):
     roi = hsv_patch(100, 45, 220)
     blk = hsv_patch(*hsv_block, size=(24, 24))
     roi[18:42, 18:42] = blk
