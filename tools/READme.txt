@@ -25,6 +25,8 @@
 │   ├── refine_diag.py          # ★ 抓取点精修的现场诊断：打覆盖率/实心度/回退原因
 │   ├── mjpeg_view.py           # ★ 抓取点预览网页：把节点写的 last.jpg 转成 :8001 的 MJPEG
 │   │                           #   --selftest 自检；读文件不占相机，挂了不影响分拣
+│   ├── capture_server.py       # ★ 数据集抓帧网页（:8003）：按 8 个类别连拍，原样存 JPEG
+│   │                           #   帧直接来自 /image 不重编码（与部署同域）；每张记 meta.jsonl
 │   ├── test_protocol.py        # ★ 离线单测：协议 + 标定数学 + 去畸变 + 内参质量闸 + 安全闸（254 项）
 │   ├── validate_postprocess.py # 板端解码结果 vs torch 的对照验证
 │   └── test_*.py                # 加载/推理测试脚本
@@ -56,3 +58,16 @@ bash /root/vision_ws/stop_all.sh    # 出问题先无脑清场，再重起
   黄=贴合旋转框  青=抓取点  绿细框=贴合正框  红虚线=回退(用框中心)
   图来自业务节点写的 ANNOTATE_DIR/last.jpg（config.ANNOTATE_ENABLE，默认 6 帧/秒）
   不想看：pkill -f mjpeg_view.py（只停网页，节点照跑）
+
+抓数据集帧（重训模型用）
+  source /opt/tros/humble/setup.bash
+  python3 /root/vision_ws/tools/capture_server.py --port 8003
+  浏览器开 http://<板子IP>:8003/
+    1) 摆好一类物料 -> 点该类按钮或按数字键 1~8 连拍（0 = 不分类）
+    2) 每拍一组就转个角度/挪个位置再拍下一组，一类 60~100 张
+    3) 点错可用「撤销上一组」；抓完点 bundle.tar.gz 整包下载
+  落盘：<root>/<会话>/raw/<LK SMT WLZ SLZ YZHU YZ BQ CUBE>/<序号>_<ms>.jpg
+        + meta.jsonl（每张记相机参数 brightness/contrast/saturation/exposure…）
+        + session_info.json
+  要点：帧是 /image 的原始 JPEG 字节，不重新编码 —— 和推理时喂模型的像素同源。
+        抓帧期间不要改 cam_tune 的参数，否则前后两批不同域；真要改就开新会话。
