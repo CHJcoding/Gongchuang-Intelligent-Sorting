@@ -22,7 +22,7 @@ HAL_StatusTypeDef Chassis_MoveTo(float x_mm, float y_mm, uint16_t vel_rpm, uint8
 HAL_StatusTypeDef Z_MoveTo(float z_mm, uint16_t vel_rpm, uint8_t acc);
 
 //拥有运动+延迟的功能！实际调用这个
-void Chassis_MoveToAndWait(float x_mm, float y_mm, uint16_t vel_rpm, uint8_t acc);
+HAL_StatusTypeDef Chassis_MoveToAndWait(float x_mm, float y_mm, uint16_t vel_rpm, uint8_t acc);
 void Z_MoveToAndWait(float z_mm, uint16_t vel_rpm, uint8_t acc);
 
 //垃圾桶旋转

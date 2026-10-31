@@ -24,8 +24,8 @@
 #define SERVO_COUNT            4U
 
 /* Servo 1/2 return to the middle position at startup. */
-#define SERVO1_SAFE_PULSE      1500U            //夹爪的安全脉冲就是松开
-#define SERVO1_RELEASE         1500U            //调整完毕 
+#define SERVO1_SAFE_PULSE      1400U            //夹爪的安全脉冲就是松开
+#define SERVO1_RELEASE         1400U            //调整完毕 
 #define SERVO1_GRIP            1100U             //调整完毕 
 
 #define SERVO2_SAFE_PULSE      500U            //后期调整(用于底座调整)

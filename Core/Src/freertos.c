@@ -64,7 +64,7 @@ typedef struct {
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+volatile uint8_t g_motion_aborted = 0;  //用于保护
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -241,18 +241,23 @@ void StartDefaultTask(void *argument)
       for (uint32_t cycle = 0U; cycle < 1; cycle++)
       {
 
-          //Servo_SetPulse(1, SERVO1_GRIP);  
-          //osDelay(3000U); 
-          Servo_SetPulse(1, SERVO1_RELEASE);  
-          osDelay(3000U);
-//          Servo_SetPulse(2, SERVO2_MIN);  
+//          Servo_SetPulse(1, SERVO1_GRIP);  
+//          osDelay(3000U); 
+//          Servo_SetPulse(1, SERVO1_RELEASE);  
 //          osDelay(3000U);
-//          Servo_SetPulse(2, SERVO2_MAX);  
-          
+//          for(uint8_t i = 0; i < 6; i++)
+//          {
+//            Spin_servo_position(i);
+//              osDelay(3000U);
+//          }
+         Pneumatic_On(); 
+          osDelay(3000);
+          //Pneumatic_Off();
+//          
 
       }
 
-      Pneumatic_AllOff();
+      //Pneumatic_AllOff();
     #endif
 
   /* Test complete. Keep the task idle without changing the outputs. */
@@ -333,6 +338,7 @@ void IndicatorTask(void *argument)
     
     comm_vision_t target_pos;
 
+    
   /* Infinite loop */
   for(;;)
   {
@@ -342,15 +348,16 @@ void IndicatorTask(void *argument)
          * 预期：只有 A 电机转，B 不动
          * 反了：改 A_DIR_SIGN
          */
-//        Z_MoveTo(20.0f, 100U, 30U);   // A=B=800，两电机同向
+        //Z_MoveTo(30.0f, 100U, 30U);   // A=B=800，两电机同向
 //        osDelay(3000U);
 
 //        /* ---------- 2. 回原点 ---------- */
-//        Z_MoveTo(0.0f, 100U, 30U);
 //        osDelay(2000U);
-      //osDelay(1500U);
-      //Chassis_MoveToAndWait(10.0f, 127.0f, XY_VEL, XY_ACC);
+//      osDelay(1500U);
+//      Chassis_MoveToAndWait(130.0f, 120.0f, XY_VEL, XY_ACC);
       //Chassis_MoveToAndWait(0.0f, 0.0f, XY_VEL, XY_ACC);
+//      Z_MoveToAndWait(Z_PICK_HEIGHT+1.0f, Z_VEL, Z_ACC);
+//      Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
       //Chassis_ReportRealPos();
       #endif
       
@@ -358,57 +365,62 @@ void IndicatorTask(void *argument)
       if(osMessageQueueGet(MotionQueueHandle, &target_pos, NULL, 100U) == osOK)
       {
           // --- 放置实际电机、舵机动作 ---
-          
           // ==========================================
           // 阶段 1：准备抓取
           // ==========================================
           // 1. 确保 Z 轴在安全高度（防止平移时撞机）
-          //Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+          Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
           
           // 2. XY 移动到物料上方
-          Chassis_MoveToAndWait(target_pos.M_x, target_pos.M_y, XY_VEL, XY_ACC);
+          if (Chassis_MoveToAndWait(target_pos.M_x, target_pos.M_y, XY_VEL, XY_ACC) != HAL_OK)
+          {
+              g_motion_aborted = 1; 
+              osSemaphoreRelease(MotionDoneSemHandle); 
+              continue; // 直接进入下一轮循环，Z轴完全不动
+          }
           
           //2. 下降 吸盘吸取并且舵机抓取
-          //Z_MoveToAndWait(Z_PICK_HEIGHT, Z_VEL, Z_ACC);
+          Z_MoveToAndWait(Z_PICK_HEIGHT, Z_VEL, Z_ACC);
           
           // ==========================================
           // 阶段 2：抓取动作
           // ==========================================
           // 打开吸盘 / 舵机夹紧
-          //Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
-          //osDelay(1000);
-          //Pneumatic_On(); 
-          //osDelay(500);     //加一点延迟放置吸不上
+          Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
+          osDelay(1000);
+          Pneumatic_On(); 
+          osDelay(500);     //加一点延迟放置吸不上
           
           //3. 抬起 / 归位
-          // Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+           Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
           
           //4. 移动到放置区域（需要考虑过度点）
           // Chassis_MoveToAndWait(PUT_TRANSITION_PLACE_X, PUT_TRANSITION_PLACE_Y, XY_VEL, XY_ACC);
-          //Chassis_MoveToAndWait(PUT_PLACE_X, PUT_PLACE_Y, XY_VEL, XY_ACC);
+          Chassis_MoveToAndWait(PUT_PLACE_X, PUT_PLACE_Y, XY_VEL, XY_ACC);
           
           //5. 垃圾桶旋转
           //Spin_position(target_pos.row - 1);  这个是张大头
-          //Spin_servo_position(target_pos.row - 1);
+          //Spin_servo_position(target_pos.row - 1);    //这个是舵机
           
           //6. z轴下降到放置高度
-          //Z_MoveToAndWait(Z_PLACE_HEIGHT, Z_VEL, Z_ACC);
+          Z_MoveToAndWait(Z_PLACE_HEIGHT, Z_VEL, Z_ACC);
           
           
           //7. 关闭吸盘 / 舵机松开
-          //Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
-          //osDelay(1000);
-          //Pneumatic_Off();
-          //osDelay(500);     //加一点延迟放置吸不上
+          Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
+          osDelay(500);
+          Pneumatic_Off();
+          osDelay(500);     //加一点延迟放置吸不上
           
           //8. 最后抬起 Z 轴，回到安全高度，准备下次任务
-            //Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+           Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
           
           //10.可以滴滴两声（灯光变色等等）
           
           
-          //11.可以加入释放信号量，告诉MainTask抓完了
+          //11.可以加入释放信号量，告诉MainTask抓完了ww
           osSemaphoreRelease(MotionDoneSemHandle);
+         
       }
       
       #if MOTOR_POSITION_REPORT_ENABLE
@@ -469,6 +481,8 @@ void MainTask(void *argument)
     static uint8_t last_color = 0xFF; 
     static bool task_finished = false;  //任务完成标志位
     
+    bool is_new_material = false; // 【新增】标记当前是不是新物料
+    
   /* Infinite loop */
   for(;;)
   {
@@ -508,10 +522,32 @@ void MainTask(void *argument)
         
         //4.大任务在这里挂起，等待运动完成
         //永远等待信号量，只有当MotionTask 抓完了才会被唤醒
-        if (osSemaphoreAcquire(MotionDoneSemHandle, 20000U) != osOK) 
+//        if (osSemaphoreAcquire(MotionDoneSemHandle, 20000U) != osOK) 
+//        {
+//            // 超时了也要告诉视觉端，否则视觉端会死等
+//            uint8_t err_msg[] = "ERR\r\n"; 
+//            CDC_Transmit_HS(err_msg, sizeof(err_msg)-1);
+//            continue;
+//            // 进入错误状态：复位电机、通知视觉 "ERR"、亮红灯
+//        }
+        
+        osSemaphoreAcquire(MotionDoneSemHandle, osWaitForever);
+        
+        // ==========================================
+        // 【新增】检查是不是因为越界被拦截了
+        // ==========================================
+        if (g_motion_aborted) 
         {
-            // 进入错误状态：复位电机、通知视觉 "ERR"、亮红灯
+            // 告诉视觉端：出错了，允许发下一个
+            uint8_t err_msg[] = "ERR\r\n"; 
+            while(CDC_Transmit_HS(err_msg, sizeof(err_msg)-1) == USBD_BUSY) 
+            {
+                osDelay(1); 
+            }
+            // 直接跳过计数和屏幕更新
+            continue; 
         }
+
         
         //5.抓取成功，更新计数，通知屏幕
         current_count++;
