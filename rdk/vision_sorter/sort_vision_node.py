@@ -31,7 +31,7 @@ from ai_msgs.msg import PerceptionTargets
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C
 import comm                       # 组帧用（模拟模式要打出真实字节）
-from color_classifier import classify_color
+from color_classifier import classify_color, color_diag
 import grasp_refine
 import hand_eye
 import camera_model
@@ -133,6 +133,18 @@ class SortVisionNode(Node):
         self.blank_until = 0.0             # 检测屏蔽截止时刻（抓取中 + 收臂期）
         self.last_fire_t = 0.0
         self.lock_center = None            # 已下发目标的位置，防重复抓同一物料
+        self.wait_ok_flag = False         # 正在严格等 32 的抓取完成 OK
+        self._wait_relog_t = 0.0           # 上次提醒「还在等」的时刻
+        self.stuck_logged = False          # 硬超时只报一次
+        self.stat_stuck = 0                # 因为等不到 OK 而暂停的次数
+        self.stat_early_ack = 0            # 过早的完成字节（其实是 ACK）次数
+        self.img_seq = 0                  # 收到图像的序号（每帧 +1，用来判断新帧）
+        self.arm_seq = 0                  # 上次抓取结束时的帧序号：之后的新帧才可用
+        self.stat_wait_frame = 0          # 在等「OK 之后的新帧」而放过的帧数
+        self.stat_out_range = 0            # 坐标越出工作空间被打回的次数
+        self.stat_stable = 0               # 在等「连续几帧都在同一位置」的次数
+        self._cand_c = None                # 上一帧最高分目标的中心（稳定性判定）
+        self._cand_hits = 0                # 该位置已连续确认的帧数
         self.lock_time = 0.0
         self.stat_det = 0                  # 收到检测消息数
         self.stat_hit = 0                  # 含有效目标的消息数
@@ -434,6 +446,15 @@ class SortVisionNode(Node):
         if not self.serial_ok:
             self._try_reopen_serial()
 
+    def _busy_text(self):
+        """busy 的真实含义：抓取中 / 严格等 32 的抓取完成 OK。"""
+        if not self.busy:
+            return "False"
+        el = max(0.0, time.time() - self.grab_start)
+        if getattr(self, "wait_ok_flag", False):
+            return "等OK(%.1fs)" % el
+        return "抓取中(%.1fs)" % el
+
     def _serial_state_text(self):
         """统计行里的串口字段：一眼看出用的哪个口、掉过几次。"""
         if self.serial_sim:
@@ -537,10 +558,45 @@ class SortVisionNode(Node):
                         self._end_grab("DONE", elapsed, status)
                         return
                 elif self.comm.poll_done():
-                    # 1 字节协议：只表示"抓完了"
-                    self._end_grab("DONE", elapsed)
-                    return
+                    # 1 字节协议：只表示"抓完了"。
+                    # 现场 2026-10-30：32 有时收到帧 0.01~0.11s 就回这个字节，
+                    # 那是「收到」ACK（与 GRAB_DONE_BYTE 同值 0x06），不是抓完；
+                    # 真实抓取周期 12~20s。太早的完成字节一律当 ACK 丢掉。
+                    if elapsed < getattr(C, "GRAB_DONE_MIN_S", 1.5):
+                        self.stat_early_ack += 1
+                        self.get_logger().info(
+                            "忽略过早的完成字节(%.2fs)：当 32 的收到 ACK，继续等抓完"
+                            % elapsed, throttle_duration_sec=2.0)
+                    else:
+                        self._end_grab("DONE", elapsed)
+                        return
             if elapsed >= self.grab_timeout_s:
+                if getattr(C, "GRAB_REQUIRE_OK", True):
+                    # 严格握手：没收到 32 的「抓取完成」就一直等，
+                    # 绝不在 32 还在动的时候发下一个坐标。
+                    if not self.wait_ok_flag:
+                        self.wait_ok_flag = True
+                        self._wait_relog_t = now
+                        self.get_logger().warn(
+                            "抓取完成字节没来（已 %.1fs），进入严格等待："
+                            "收到 OK 才发下一个坐标" % elapsed)
+                    elif now - self._wait_relog_t >= getattr(
+                            C, "GRAB_WAIT_RELOG_S", 3.0):
+                        self._wait_relog_t = now
+                        self.get_logger().warn(
+                            "还在等 STM32 抓取完成 OK，已等 %.1fs（上限 %.0fs），期间不下发"
+                            % (elapsed, getattr(C, "GRAB_HARD_TIMEOUT_S", 60.0)))
+                    if elapsed >= getattr(C, "GRAB_HARD_TIMEOUT_S", 60.0) \
+                            and not self.stuck_logged:
+                        self.stuck_logged = True
+                        self.stat_stuck += 1
+                        self.armed = False
+                        self.get_logger().error(
+                            "%.0fs 没收到抓取完成 OK，已暂停自动下发"
+                            "（检查 32 的完成信号，再发 /sort/start 重新开始）"
+                            % elapsed)
+                        self._publish_state("GRAB_STUCK")
+                    return
                 self.get_logger().warn(
                     "抓取完成字节超时(%.1fs)，强制解锁（下位机是否没发完成信号？）"
                     % elapsed)
@@ -576,6 +632,25 @@ class SortVisionNode(Node):
         self.lock_center = None
         self.blank_until = time.time() + float(getattr(C, "BLANK_AFTER_ERR_S", 0.5))
         self._publish_state("GRAB_ERR")
+
+    def _target_xy_mm(self, target):
+        """框中心 → 龙门毫米（去畸变 + 手眼仿射）；失败返回 None。"""
+        x1, y1, x2, y2 = target["bbox"]
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        try:
+            cx_u, cy_u = camera_model.undistort_point(cx, cy)
+            x_mm, y_mm, _ = pixel_to_robot(cx_u, cy_u)
+            return (float(x_mm), float(y_mm))
+        except Exception as e:
+            self.get_logger().debug("坐标换算失败：%s" % (e,))
+            return None
+
+    def _in_workspace(self, x_mm, y_mm):
+        """毫米坐标是否在允许的工作空间内（未配置 = 不限）。"""
+        if getattr(C, "WORKSPACE_X_MAX", None) is None:
+            return True
+        return (C.WORKSPACE_X_MIN <= x_mm <= C.WORKSPACE_X_MAX and
+                C.WORKSPACE_Y_MIN <= y_mm <= C.WORKSPACE_Y_MAX)
 
     def _is_rejected_target(self, target):
         """该目标（按毫米坐标）是否落在被 32 拒过的位置附近。"""
@@ -624,6 +699,9 @@ class SortVisionNode(Node):
         结束抓取窗口：解除 busy、开始收臂屏蔽、允许抓下一个物料。
         status 仅在 2 字节协议（GRAB_STATUS_ENABLE=True）下由下位机回报。
         """
+        if getattr(C, "SORT_ONE_BY_ONE", True):
+            # 严格单发：这次抓取结束了，从现在起抓到的「新一帧」才允许再下发。
+            self.arm_seq = self.img_seq
         self.busy = False
         self.lock_center = None            # 物料已被搬走，解除位置锁定
         self.blank_until = time.time() + getattr(C, "BLANK_AFTER_DONE_S", 0.8)
@@ -655,6 +733,7 @@ class SortVisionNode(Node):
         key = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         with self.frame_lock:
             self.frames.append((key, frame))
+        self.img_seq += 1                # 严格单发：OK 后要等这一帧之后的新帧
 
         if self.detector is None:
             return
@@ -912,6 +991,29 @@ class SortVisionNode(Node):
                 return
 
 
+        # 工作空间限位：算出来的坐标越界就是误识别，直接打回，不占用下发机会。
+        if getattr(C, "WORKSPACE_X_MAX", None) is not None:
+            kept, out = [], []
+            for t in targets:
+                xy = self._target_xy_mm(t)
+                if xy is not None and not self._in_workspace(*xy):
+                    out.append((t, xy))
+                else:
+                    kept.append(t)
+            if out:
+                self.stat_out_range += len(out)
+                t0, xy0 = out[0]
+                self.get_logger().warn(
+                    "打回重新识别：越界目标 %d 个，例如 %s (%.0f, %.0f)mm "
+                    "不在 X[%.0f,%.0f] Y[%.0f,%.0f]"
+                    % (len(out), t0["shape"], xy0[0], xy0[1],
+                       C.WORKSPACE_X_MIN, C.WORKSPACE_X_MAX,
+                       C.WORKSPACE_Y_MIN, C.WORKSPACE_Y_MAX),
+                    throttle_duration_sec=5.0)
+            targets = kept
+            if not targets:
+                return
+
         # 抓取窗口：机械臂/夹具会进入视野并被 YOLO 误检成物料，必须屏蔽
         if self.blank_until and time.time() < self.blank_until:
             self.stat_blank += 1
@@ -925,10 +1027,33 @@ class SortVisionNode(Node):
         self.pub_debug.publish(String(data=json.dumps(
             {"n": len(targets), "top": targets[0]}, ensure_ascii=False)))
 
+        # 严格单发：上一次抓取刚结束，必须等一帧「新的」图像才允许再发，
+        # 避免拿 OK 之前的旧画面重复下发同一个位置。
+        if getattr(C, "SORT_ONE_BY_ONE", True) and self.img_seq <= self.arm_seq:
+            self.stat_wait_frame += 1
+            return
         if not (self.armed and not self.busy):
             return
         if time.time() - self.last_fire_t < C.SORT_COOLDOWN_S:
             return
+        # 置信度最高 + 最稳定：targets 已按 conf 从高到低排好，只看第一颗；
+        # 它必须在同一位置连续出现 STABLE_PICK_FRAMES 帧才允许发，
+        # 只闪一帧的误检会被连续性挡掉。
+        need = int(getattr(C, "STABLE_PICK_FRAMES", 2))
+        if need > 1:
+            tb = targets[0]["bbox"]
+            ccx, ccy = (tb[0] + tb[2]) / 2.0, (tb[1] + tb[3]) / 2.0
+            tol = float(getattr(C, "STABLE_PICK_PX", 30.0))
+            if self._cand_c is not None and \
+                    ((ccx - self._cand_c[0]) ** 2 +
+                     (ccy - self._cand_c[1]) ** 2) ** 0.5 <= tol:
+                self._cand_hits += 1
+            else:
+                self._cand_hits = 1
+            self._cand_c = (ccx, ccy)
+            if self._cand_hits < need:
+                self.stat_stable += 1
+                return
         # 防重复：同一位置已下发过的物料，等它被搬走/移动后再抓
         top = targets[0]
         cx = (top["bbox"][0] + top["bbox"][2]) / 2.0
@@ -940,6 +1065,8 @@ class SortVisionNode(Node):
                     time.time() - self.lock_time < getattr(C, "SAME_TARGET_LOCK_S", 20.0):
                 return
             self.lock_center = None        # 物料移动了/超时，解除锁定
+        self._cand_c = None          # 发出去了，稳定性重新计数
+        self._cand_hits = 0
         self._fire(top, stamp, frame)
 
     def _target_in_valid_area(self, target):
@@ -985,6 +1112,9 @@ class SortVisionNode(Node):
         else:
             window = self.grab_cycle_s
         self.blank_until = now + window + getattr(C, "BLANK_AFTER_DONE_S", 0.8)
+        self.wait_ok_flag = False          # 新一次抓取，重新计时等 OK
+        self._wait_relog_t = 0.0
+        self.stuck_logged = False
         self._publish_state("GRABBING")
 
     def _log_scan(self, targets, stamp, frame):
@@ -1073,6 +1203,7 @@ class SortVisionNode(Node):
             self._publish_state("COLOR_FAIL")
             return
 
+        cdiag = color_diag(roi)     # 判色取证：HSV 中位数 + 前二票数
         # ---- 抓取点：不用框中心 ----
         # YOLO 的框天生比物料大一圈（回归 + 阴影 + stride 8 网格），框中心跟着偏；
         # 物料是单色塑料件，颜色轮廓比模型回归准得多，所以改成在框内做颜色分割，
@@ -1110,7 +1241,21 @@ class SortVisionNode(Node):
                 "把物料往画面中间挪" % (why_r, cx, cy),
                 throttle_duration_sec=10.0)
         x_mm, y_mm, z_mm = pixel_to_robot(cx_u, cy_u)
-
+        # 工作空间硬闸：精修后的抓取点也可能越界（框中心在内、质心在外），
+        # 越界一律不发，并把这个位置拉黑一会儿，后面的帧不再拿它试。
+        if not self._in_workspace(x_mm, y_mm):
+            self.stat_out_range += 1
+            self.rejects.append((x_mm, y_mm, time.time()))
+            self.last_fire_t = time.time()
+            self.get_logger().warn(
+                "抓取点越界，打回重新识别：%s/%s (%.0f, %.0f)mm "
+                "不在 X[%.0f,%.0f] Y[%.0f,%.0f]"
+                % (target["shape"], color, x_mm, y_mm,
+                   C.WORKSPACE_X_MIN, C.WORKSPACE_X_MAX,
+                   C.WORKSPACE_Y_MIN, C.WORKSPACE_Y_MAX),
+                throttle_duration_sec=5.0)
+            self._publish_state("OUT_OF_RANGE")
+            return
         # ---- 安全闸：没标定 / 串口掉了，一律不许下发 ----
         # 这两条以前只是打日志然后照发，龙门装好后一旦忘了标定就会满场乱走。
         block = safety.check_downlink(
@@ -1202,14 +1347,14 @@ class SortVisionNode(Node):
         if camera_model.is_active():
             self.get_logger().info(
                 "目标 %s/%s conf=%.2f px=(%.0f,%.0f)->去畸变(%.0f,%.0f) -> "
-                "(%.1f, %.1f)mm"
+                "(%.1f, %.1f)mm  %s"
                 % (payload["shape_cn"], color, payload["conf"],
-                   cx, cy, cx_u, cy_u, x_mm, y_mm))
+                   cx, cy, cx_u, cy_u, x_mm, y_mm, cdiag))
         else:
             self.get_logger().info(
-                "目标 %s/%s conf=%.2f px=(%.0f,%.0f) -> (%.1f, %.1f)mm"
+                "目标 %s/%s conf=%.2f px=(%.0f,%.0f) -> (%.1f, %.1f)mm  %s"
                 % (payload["shape_cn"], color, payload["conf"],
-                   cx, cy, x_mm, y_mm))
+                   cx, cy, x_mm, y_mm, cdiag))
 
         if self.serial_worker is not None and self.serial_ok:
             self.serial_worker.submit(target["shape"], color, x_mm, y_mm)
@@ -1284,13 +1429,14 @@ class SortVisionNode(Node):
         self.get_logger().info(
             "统计: 检测消息=%d 含目标=%d 下发=%d 屏蔽=%d 拒绝=%d 颜色失败=%d "
             "安全闸拦截=%d 串口失败=%d 边缘外推=%d 抓取点精修=%d/%d 帧缓存=%d "
-            "本地推理=%.1fms busy=%s 串口=%s"
+            "本地推理=%.1fms busy=%s 串口=%s 等新帧=%d 等稳定=%d 越界打回=%d"
             % (self.stat_det, self.stat_hit, self.stat_fire, self.stat_blank,
                self.stat_reject, self.stat_color_fail, self.stat_blocked,
                self.stat_send_fail,
                self.stat_edge, self.stat_refine_ok, self.stat_refine_fb,
-               len(self.frames), self.stat_infer_ms, self.busy,
-               self._serial_state_text()))
+               len(self.frames), self.stat_infer_ms, self._busy_text(),
+               self._serial_state_text(), self.stat_wait_frame,
+               self.stat_stable, self.stat_out_range))
 
     def destroy_node(self):
         if self.serial_worker:

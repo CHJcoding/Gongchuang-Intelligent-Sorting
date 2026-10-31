@@ -44,6 +44,19 @@ def _chromatic_mask(hsv_roi):
     return m.astype(np.uint8) * 255
 
 
+def color_diag(bgr_roi):
+    """判色取证：一行说明 ROI 的 HSV 中位数、彩色占比和前两名的票数占比。"""
+    hsv = cv2.cvtColor(bgr_roi, cv2.COLOR_BGR2HSV)
+    total = float(max(hsv.shape[0] * hsv.shape[1], 1))
+    chiral = _chromatic_mask(hsv)
+    frac = cv2.countNonZero(chiral) / total
+    votes = _vote(hsv, chiral if frac >= C.CHROMATIC_MIN_FRAC else None)
+    top = sorted(votes.items(), key=lambda kv: -kv[1])[:2]
+    return "HSV中位(%d,%d,%d) 彩色%.0f%% 票=%s" % (
+        int(np.median(hsv[:, :, 0])), int(np.median(hsv[:, :, 1])),
+        int(np.median(hsv[:, :, 2])), frac * 100,
+        " ".join("%s:%.0f%%" % (k, 100.0 * v / total) for k, v in top))
+
 def classify_color(bgr_roi, verbose=False):
     """
     输入: YOLO 检测到的 BGR ROI 图
