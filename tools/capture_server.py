@@ -17,11 +17,14 @@
     2. 点该类按钮 / 按数字键 → 连拍 N 张
     3. 每拍一组，把物料**转个角度或挪个位置**再拍下一组
     4. 每类凑够 60~100 张（分布在 10~15 组里）
+    5. 按 **0** 拍负样本：空料盘 / 夹爪 / 手 / 料盘边缘，画面里不要有物料，
+       目标 40 张左右。负样本在训练时给**空标签**（图片进 images，labels 留空），
+       专门压住「背景某处被判成物料」这类误检。
 
 落盘结构:
     <root>/<session>/raw/<LABEL>/<seq>_<ms>.jpg     帧（JPEG 原字节）
-    <root>/<session>/raw/unlabeled/<seq>_<ms>.jpg   不分类的帧
-    <root>/<session>/meta.jsonl                      每张一行的元数据
+    <root>/<session>/raw/negative/<seq>_<ms>.jpg    负样本帧（空背景/夹爪，给空标签）
+    <root>/<session>/meta.jsonl                      每张一行的元数据（含 role=object|negative）
     <root>/<session>/session_info.json               会话开始时的相机参数
 
 注意：抓帧期间不要停 det/sort，也不要调 cam_tune 的参数——参数一变，
@@ -51,6 +54,8 @@ BOUNDARY = "gcframefeed"
 
 # 与 gc_1029_labels.list 一一对应（模型输出顺序）
 LABELS = ["LK", "SMT", "WLZ", "SLZ", "YZHU", "YZ", "BQ", "CUBE"]
+NEG = "negative"                 # 负样本（空背景 / 夹爪 / 手 / 料盘边），训练时给空标签
+ALIAS = {"unlabeled": NEG}       # 旧叫法，兼容
 CN = {
     "LK": "镂空正方体",
     "SMT": "正四面体",
@@ -60,7 +65,7 @@ CN = {
     "YZ": "圆锥",
     "BQ": "半球",
     "CUBE": "正方体",
-    "unlabeled": "不分类",
+    NEG: "空背景/夹爪(负样本)",
 }
 
 CTRLS = [
@@ -165,9 +170,14 @@ class Capturer:
     # -- 初始化 --------------------------------------------------
     def _load_counts(self):
         d = os.path.join(self.root, "raw")
-        for cls in LABELS + ["unlabeled"]:
-            p = os.path.join(d, cls)
-            files = [f for f in os.listdir(p)] if os.path.isdir(p) else []
+        for cls in LABELS + [NEG]:
+            dirs = [os.path.join(d, cls)]
+            if cls == NEG:                      # 兼容旧会话的 unlabeled 目录
+                dirs.append(os.path.join(d, "unlabeled"))
+            files = []
+            for p in dirs:
+                if os.path.isdir(p):
+                    files.extend(f for f in os.listdir(p) if f.lower().endswith(".jpg"))
             self.counts[cls] = len(files)
             seqs = []
             for f in files:
@@ -191,8 +201,8 @@ class Capturer:
 
     # -- 对外 ----------------------------------------------------
     def submit(self, cls, n, gap):
-        cls = cls.strip()
-        if cls not in LABELS and cls != "unlabeled":
+        cls = ALIAS.get(cls.strip(), cls.strip())
+        if cls not in LABELS and cls != NEG:
             return {"ok": False, "error": "未知类别 %r" % cls}
         try:
             n = max(1, min(60, int(n)))
@@ -220,7 +230,9 @@ class Capturer:
             "total": sum(counts.values()),
             "counts": counts,
             "labels": LABELS,
+            "neg": NEG,
             "cn": CN,
+            "plan": {"object": 80, "negative": 40},
             "dims": list(dims),
             "params": self.params,
             "pending": len(self.queue),
@@ -324,6 +336,7 @@ class Capturer:
         rec = {
             "file": os.path.relpath(path, self.root),
             "cls": cls,
+            "role": "negative" if cls == NEG else "object",
             "seq": seq,
             "bytes": nbytes,
             "ts": round(time.time(), 3),
@@ -368,6 +381,9 @@ body{margin:0;background:#12161b;color:#dfe6ee;font:14px/1.5 system-ui,sans-seri
 .cls .k{position:absolute;right:8px;top:6px;font-size:11px;color:#7f93a8}
 .cls .n{float:right;font-size:18px;font-weight:700;color:#57d38c;font-family:ui-monospace,monospace}
 .cls small{color:#8b9bad}
+.cls.neg{background:#2a2230;border-color:#4a3a57}
+.cls.neg:hover{background:#34283d;border-color:#6a5480}
+.cls.neg .n{color:#c79bf0}
 .row{display:flex;gap:8px;align-items:center;margin:10px 0;flex-wrap:wrap}
 input[type=number]{width:66px;background:#0e1216;color:#dfe6ee;border:1px solid #33414f;
      border-radius:4px;padding:5px 6px;font:inherit}
@@ -393,7 +409,8 @@ button.btn.red{background:#8a3b3b}
 <div id="wrap">
   <div id="left"><img src="/stream" alt="live"></div>
   <div id="right">
-    <div class="hint">摆好一类 → 点按钮或按数字键连拍 → <b>转个角度/挪个位置再拍下一组</b></div>
+    <div class="hint">摆好一类 → 点按钮或按数字键连拍 → <b>转个角度/挪个位置再拍下一组</b><br>
+      每类目标 <b>80</b> 张；按 <b>0</b> 拍负样本（<b>空料盘 / 夹爪 / 手 / 料盘边缘</b>，画面里<b>不要有物料</b>）目标 <b>40</b> 张 —— 这些帧训练时给空标签，专门压住误检</div>
     <div id="grid"></div>
     <div class="row">
       <label>连拍 <input type="number" id="n" value="5" min="1" max="60"> 张</label>
@@ -409,6 +426,8 @@ button.btn.red{background:#8a3b3b}
 <script>
 const LABELS = __LABELS__;
 const CN = __CN__;
+const NEG = __NEG__;
+const ALL = LABELS.concat([NEG]);
 let SN = {};
 function log(t, cls){
   const el = document.getElementById('log');
@@ -420,12 +439,14 @@ function log(t, cls){
 }
 function build(){
   const g = document.getElementById('grid');
-  LABELS.concat(['unlabeled']).forEach((L, i) => {
+  ALL.forEach((L, i) => {
     const b = document.createElement('button');
-    b.className = 'cls'; b.id = 'b_' + L;
-    b.innerHTML = '<span class="k">' + (i < 8 ? (i + 1) : '0') + '</span>' +
+    b.className = 'cls' + (L === NEG ? ' neg' : '');
+    b.id = 'b_' + L;
+    b.innerHTML = '<span class="k">' + (L === NEG ? '0' : (i + 1)) + '</span>' +
                   '<b>' + CN[L] + '</b> <small>' + L + '</small>' +
                   '<span class="n" id="n_' + L + '">0</span>';
+    if (L === NEG) b.title = '负样本：画面里不要有物料（空料盘/夹爪/手/边缘），训练时给空标签';
     b.onclick = () => cap(L);
     g.appendChild(b);
   });
@@ -445,7 +466,7 @@ function cap(L){
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
   if (e.key >= '1' && e.key <= '8') cap(LABELS[parseInt(e.key, 10) - 1]);
-  if (e.key === '0') cap('unlabeled');
+  if (e.key === '0') cap(NEG);
 });
 document.getElementById('undo').onclick = () => {
   fetch('/undo', {method: 'POST'}).then(r => r.json()).then(j => {
@@ -460,9 +481,15 @@ function tick(){
     document.getElementById('root').textContent = s.root;
     document.getElementById('free').textContent = '剩余 ' + s.free_gb + ' GB';
     const c = s.counts || {};
-    LABELS.concat(['unlabeled']).forEach(L => {
+    ALL.forEach(L => {
       const el = document.getElementById('n_' + L);
-      if (el) el.textContent = c[L] || 0;
+      if (el) {
+        const goal = (L === NEG) ? (s.plan ? s.plan.negative : 40)
+                                 : (s.plan ? s.plan.object : 80);
+        const v = c[L] || 0;
+        el.textContent = v;
+        el.style.color = v >= goal ? '#5fe08a' : '#ffd76a';
+      }
     });
     const h = document.getElementById('params');
     if (s.params && Object.keys(s.params).length)
@@ -513,14 +540,15 @@ def make_handler(latest, cap):
                     qs[k] = v
             if path in ("/", "/index.html"):
                 body = (PAGE.replace("__LABELS__", json.dumps(LABELS))
-                            .replace("__CN__", json.dumps(CN, ensure_ascii=False)))
+                            .replace("__CN__", json.dumps(CN, ensure_ascii=False))
+                            .replace("__NEG__", "'" + NEG + "'"))
                 self._send(200, body, "text/html; charset=utf-8")
             elif path == "/healthz":
                 self._send(200, latest.health())
             elif path == "/stats":
                 self._send(200, cap.stats())
             elif path == "/capture":
-                cls = qs.get("cls", "unlabeled")
+                cls = qs.get("cls", NEG)
                 n = qs.get("n", 5)
                 gap = qs.get("gap", 0.3)
                 self._send(200, cap.submit(cls, n, gap))
