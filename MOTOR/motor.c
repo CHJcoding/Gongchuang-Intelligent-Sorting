@@ -273,9 +273,9 @@ uint32_t Motion_EstimateTimeMs(float distance_mm, uint16_t vel_rpm, uint8_t acc,
     }
     
     float t_total = t_cruise + t_acc;
-    uint32_t ms = (uint32_t)(t_total * 1.2f * 1000.0f) + 800U;
+    uint32_t ms = (uint32_t)(t_total * 1.2f * 1000.0f);
 
-    if (ms < 150U) ms = 150U;
+    if (ms < 100U) ms = 100U;
     return ms;
 }
 

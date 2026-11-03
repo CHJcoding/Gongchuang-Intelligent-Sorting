@@ -61,12 +61,16 @@ HAL_StatusTypeDef Spin_servo_position(int position)
     {
         return HAL_ERROR;
     }
-    float pulse = 500.0f + (position * (2500.0f - 500.0f) / 6.0f);
+    float pulse = 500.0f + (position * (2500.0f - 500.0f) / 6.0f) + 150.0f;
+    if (pulse > 2500.0f)
+    {
+       pulse = pulse - 2500.0f + 500.0f;
+    
+    }
     Servo_SetPulse(SERVO_ADDR2, (uint16_t)pulse);
     
     return HAL_OK;
 }
-
 
 
 /* Æø±Ã²¿·Ö */

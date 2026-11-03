@@ -36,7 +36,7 @@
 #include "screen.h"
 #include "screen_config.h"
 #include "battery_driver.h"
-
+#include "DEBUG.h"
 #include "OLED.h"
 #include "BUTTON.h"
 /* USER CODE END Includes */
@@ -232,11 +232,11 @@ void StartDefaultTask(void *argument)
     Servo_Init();
     OLED_Init();
     Chassis_Init();
-    
+    buzzer_Init();
+    Debug_Init(); 
     //* 2. 初始状态：亮蓝灯闪烁（等待按键） *//
     WS2812_Blink(1, 0, 0, 255, 50, 200, 800); // 亮度50，亮500ms灭500ms
     WS2812_SetColor(2, 255, 255, 255, 50);
-    
     #if PNEUMATIC_TEST_ENABLE
       for (uint32_t cycle = 0U; cycle < 1; cycle++)
       {
@@ -245,11 +245,11 @@ void StartDefaultTask(void *argument)
 //          osDelay(3000U); 
 //          Servo_SetPulse(1, SERVO1_RELEASE);  
 //          osDelay(3000U);
-//          for(uint8_t i = 0; i < 6; i++)
-//          {
-//            Spin_servo_position(i);
-//              osDelay(3000U);
-//          }
+          for(uint8_t i = 0; i < 6; i++)
+          {
+            Spin_servo_position(i);
+              osDelay(3000U);
+          }
          Pneumatic_On(); 
           osDelay(3000);
           //Pneumatic_Off();
@@ -353,12 +353,24 @@ void IndicatorTask(void *argument)
 
 //        /* ---------- 2. 回原点 ---------- */
 //        osDelay(2000U);
-//      osDelay(1500U);
-//      Chassis_MoveToAndWait(130.0f, 120.0f, XY_VEL, XY_ACC);
-      //Chassis_MoveToAndWait(0.0f, 0.0f, XY_VEL, XY_ACC);
+      osDelay(1500U);
+//      Chassis_MoveToAndWait(PUT_PLACE_X, PUT_PLACE_Y, XY_VEL, XY_ACC);
+        Chassis_MoveToAndWait(130.0f, 120.0f, XY_VEL, XY_ACC);
+//        osDelay(5000U);
+        Chassis_MoveToAndWait(0.0f, 0.0f, XY_VEL, XY_ACC);
+//        osDelay(5000U);
+//      Chassis_MoveTo(130.0f, 120.0f, 300, 225);
+//      osDelay(5000U);
+//      Chassis_MoveTo(0.0f, 0.0f, 300, 225);
+//      osDelay(5000U);
+      
 //      Z_MoveToAndWait(Z_PICK_HEIGHT+1.0f, Z_VEL, Z_ACC);
-//      Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
+        //Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
+      //osDelay(1000);
+      //Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
       //Chassis_ReportRealPos();
+//      Z_MoveToAndWait(Z_PICK_HEIGHT, Z_VEL, Z_ACC);
+//      Debug_Printf("Hello World");
       #endif
       
       //1. 阻塞等待运动指令
@@ -378,7 +390,7 @@ void IndicatorTask(void *argument)
               osSemaphoreRelease(MotionDoneSemHandle); 
               continue; // 直接进入下一轮循环，Z轴完全不动
           }
-          
+          Pneumatic_On();
           //2. 下降 吸盘吸取并且舵机抓取
           Z_MoveToAndWait(Z_PICK_HEIGHT, Z_VEL, Z_ACC);
           
@@ -387,9 +399,9 @@ void IndicatorTask(void *argument)
           // ==========================================
           // 打开吸盘 / 舵机夹紧
           Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
-          osDelay(1000);
-          Pneumatic_On(); 
-          osDelay(500);     //加一点延迟放置吸不上
+          //osDelay(1000);
+           
+          //osDelay(500);     //加一点延迟放置吸不上
           
           //3. 抬起 / 归位
            Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
@@ -400,23 +412,23 @@ void IndicatorTask(void *argument)
           
           //5. 垃圾桶旋转
           //Spin_position(target_pos.row - 1);  这个是张大头
-          //Spin_servo_position(target_pos.row - 1);    //这个是舵机
+          Spin_servo_position(target_pos.row - 1);    //这个是舵机
           
           //6. z轴下降到放置高度
-          Z_MoveToAndWait(Z_PLACE_HEIGHT, Z_VEL, Z_ACC);
-          
+          //Z_MoveToAndWait(Z_PLACE_HEIGHT, Z_VEL, Z_ACC);
+         
           
           //7. 关闭吸盘 / 舵机松开
           Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
           osDelay(500);
           Pneumatic_Off();
-          osDelay(500);     //加一点延迟放置吸不上
+          //osDelay(500);     //加一点延迟放置吸不上
           
           //8. 最后抬起 Z 轴，回到安全高度，准备下次任务
-           Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
-          
+           //Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+          //Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
           //10.可以滴滴两声（灯光变色等等）
-          
+          buzzer_finish_flag(2);
           
           //11.可以加入释放信号量，告诉MainTask抓完了ww
           osSemaphoreRelease(MotionDoneSemHandle);
@@ -500,10 +512,10 @@ void MainTask(void *argument)
             
             if (current_row > 6) 
             {
-                task_finished = true;
-                 buzzer_finish_flag(3);
-                
-                continue; 
+                //task_finished = true;
+                current_row = 1;
+                 buzzer_finish_flag(5);
+                //continue; 
             }
             
             last_shape = current_vision.M_shape_id;

@@ -110,6 +110,7 @@ int main(void)
   MX_TIM13_Init();
   MX_I2C1_Init();
   MX_SPI3_Init();
+  MX_UART8_Init();
   /* USER CODE BEGIN 2 */
   
  /* Power_5V_EN = 1 */

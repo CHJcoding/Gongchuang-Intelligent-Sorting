@@ -10,30 +10,26 @@
  * ============================================================ */
  /* 分拣动作物理参数 */
 #define Z_SAFE_HEIGHT        0.0f   // Z轴安全高度（抬起，负数代表向上）
-#define Z_PICK_HEIGHT        43.0f   // Z轴抓取高度（下探，正数代表向下）
-#define Z_PLACE_HEIGHT       20.0f   // Z轴放置高度
+#define Z_PICK_HEIGHT        49.0f   // Z轴抓取高度（下探，正数代表向下）
+#define Z_PLACE_HEIGHT       30.0f   // Z轴放置高度
 
-#define XY_VEL              150U     // XY 移动速度 (RPM)
-#define XY_ACC              40U      // XY 加速度
+#define XY_VEL              150U     // XY 移动速度 (RPM)    150U
+#define XY_ACC              150U      // XY 加速度              40U
 #define Z_VEL               200U     // Z 移动速度 (RPM)
 #define Z_ACC               40U      // Z 加速度
 
 //点位x 和点位y 放置点
-#define PUT_PLACE_X            0.0f    // 放置区中心 X 坐标
-#define PUT_PLACE_Y            0.0f    // 放置区中心 Y 坐标
-
-//过度点
-#define PUT_TRANSITION_PLACE_X  0.0f
-#define PUT_TRANSITION_PLACE_Y  160.0f 
+#define PUT_PLACE_X            10.0f    // 放置区中心 X 坐标
+#define PUT_PLACE_Y            0.0f    // 放置区中心 Y 坐标 
 
 /* ============================================================
  *  XY 轴物理安全边界 (单位: mm)
  *  根据你的机械行程修改，防止视觉发来非法坐标导致撞机
  * ============================================================ */
 #define XY_X_MIN   0.0f
-#define XY_X_MAX   150.0f   // 假设 X 轴最大 300mm
+#define XY_X_MAX   160.0f   // 假设 X 轴最大 300mm
 #define XY_Y_MIN   0.0f
-#define XY_Y_MAX   150.0f   // 假设 Y 轴最大 300mm
+#define XY_Y_MAX   160.0f   // 假设 Y 轴最大 300mm
 
 /* ========== 电机地址 ========== */
 #define A_MOTOR_ADDR    1U
