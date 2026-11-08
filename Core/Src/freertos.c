@@ -39,17 +39,18 @@
 #include "DEBUG.h"
 #include "OLED.h"
 #include "BUTTON.h"
+#include "SENSOR.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
 
-typedef struct {
-    ScreenCmdType_t type; // 操作类型
-    uint8_t row;          // 屏幕行号
-    int32_t count;        // 当前的数量
-} ScreenMsg_t;
+//typedef struct {
+//    ScreenCmdType_t type; // 操作类型
+//    uint8_t row;          // 屏幕行号
+//    int32_t count;        // 当前的数量
+//} ScreenMsg_t;
 
 
 /* USER CODE END PTD */
@@ -64,7 +65,7 @@ typedef struct {
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-volatile uint8_t g_motion_aborted = 0;  //用于保护
+volatile uint8_t g_motion_aborted = 0;  //用于保护（业务保护，比如坐标越界就会1）
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -241,18 +242,19 @@ void StartDefaultTask(void *argument)
       for (uint32_t cycle = 0U; cycle < 1; cycle++)
       {
 
+
 //          Servo_SetPulse(1, SERVO1_GRIP);  
 //          osDelay(3000U); 
 //          Servo_SetPulse(1, SERVO1_RELEASE);  
 //          osDelay(3000U);
-          for(uint8_t i = 0; i < 6; i++)
-          {
-            Spin_servo_position(i);
-              osDelay(3000U);
-          }
-         Pneumatic_On(); 
-          osDelay(3000);
-          //Pneumatic_Off();
+//          for(uint8_t i = 0; i < 6; i++)
+//          {
+//            Spin_servo_position(i);
+//             osDelay(3000U);
+//          }
+//         Pneumatic_On(); 
+//          osDelay(3000);
+//         Pneumatic_Off();
 //          
 
       }
@@ -344,6 +346,20 @@ void IndicatorTask(void *argument)
   {
       //ZDTcontrol
       #if CHASSIS_TEST_ENABLE
+      
+        // 【优雅的一行调用】等待物料掉落，最长等 1500 毫秒
+          if (Sensor_WaitForDrop(1500)) 
+          {
+              // 成功检测到物料穿过传感器掉进桶里
+              g_motion_aborted = 0; 
+              buzzer_finish_flag(2); // 滴滴，成功提示
+          } 
+          else 
+          {
+              // 1.5 秒了还没掉下去，肯定卡住了或者没抓起来
+              g_motion_aborted = 1; 
+          }
+          
       /* ---------- 1. 单轴方向：A 正转 10mm ----------
          * 预期：只有 A 电机转，B 不动
          * 反了：改 A_DIR_SIGN
@@ -353,11 +369,11 @@ void IndicatorTask(void *argument)
 
 //        /* ---------- 2. 回原点 ---------- */
 //        osDelay(2000U);
-      osDelay(1500U);
+//      osDelay(1500U);
 //      Chassis_MoveToAndWait(PUT_PLACE_X, PUT_PLACE_Y, XY_VEL, XY_ACC);
-        Chassis_MoveToAndWait(130.0f, 120.0f, XY_VEL, XY_ACC);
+//        Chassis_MoveToAndWait(130.0f, 120.0f, XY_VEL, XY_ACC);
 //        osDelay(5000U);
-        Chassis_MoveToAndWait(0.0f, 0.0f, XY_VEL, XY_ACC);
+//        Chassis_MoveToAndWait(0.0f, 0.0f, XY_VEL, XY_ACC);
 //        osDelay(5000U);
 //      Chassis_MoveTo(130.0f, 120.0f, 300, 225);
 //      osDelay(5000U);
@@ -463,11 +479,10 @@ void ScreenTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-      
-      
       if(osMessageQueueGet(ScreenQueueHandle, &msg, NULL, osWaitForever) == osOK)
       {
-            screen_update_vision(msg.row, msg.count);
+          //若接收到了上位机下发的视觉消息，则进行判断
+            screen_handle_material(msg.shape_id, msg.color_id);
       }
       
     osDelay(1);
@@ -487,93 +502,40 @@ void MainTask(void *argument)
   /* USER CODE BEGIN MainTask */
     comm_vision_t current_vision;
     
-    static uint8_t current_row = 1;         //第几行
-    static int32_t current_count = 0;       //抓放成功数量
-    static uint8_t last_shape = 0xFF;
-    static uint8_t last_color = 0xFF; 
-    static bool task_finished = false;  //任务完成标志位
-    
-    bool is_new_material = false; // 【新增】标记当前是不是新物料
-    
   /* Infinite loop */
   for(;;)
   {
       if(osMessageQueueGet(CommQueueHandle, &current_vision, NULL, osWaitForever) == osOK)
       {
-        if(task_finished)
-        {
-            continue;   //任务结束丢弃后续数据
-        }
-        
-        //2. 业务判断：是否换行
-        if(current_vision.M_shape_id != last_shape || current_vision.M_color_id != last_color)
-        {
-            if (last_shape != 0xFF) current_row++;
+        // 1. 通知运动任务区抓取
+            osMessageQueuePut(MotionQueueHandle, &current_vision, 0, 0);
             
-            if (current_row > 6) 
-            {
-                //task_finished = true;
-                current_row = 1;
-                 buzzer_finish_flag(5);
-                //continue; 
+            // 2. 等待抓取完成 (强烈建议加上 20000U 超时)
+          if (osSemaphoreAcquire(MotionDoneSemHandle, 20000U) != osOK)    //感觉后期可以不加，调试加上即可(osWaitForever)
+            {       
+                uint8_t err_msg[] = "ERR\r\n"; 
+                CDC_Transmit_HS(err_msg, sizeof(err_msg)-1);
+                continue; 
             }
             
-            last_shape = current_vision.M_shape_id;
-            last_color = current_vision.M_color_id;
-            current_count = 0; 
-            
-            // 通知屏幕：新物料进场 (数量 0)
-            ScreenMsg_t smsg = {SCREEN_CMD_UPDATE_ROW, current_row, current_count};
-            osMessageQueuePut(ScreenQueueHandle, &smsg, 0, 0);
-        }
-        
-        
-        // 3. 通知运动任务区抓取（把行号直接塞进 current_vision）
-        current_vision.row = current_row;  // 打上行号补丁
-        osMessageQueuePut(MotionQueueHandle, &current_vision, 0, 0);
-        
-        //4.大任务在这里挂起，等待运动完成
-        //永远等待信号量，只有当MotionTask 抓完了才会被唤醒
-//        if (osSemaphoreAcquire(MotionDoneSemHandle, 20000U) != osOK) 
-//        {
-//            // 超时了也要告诉视觉端，否则视觉端会死等
-//            uint8_t err_msg[] = "ERR\r\n"; 
-//            CDC_Transmit_HS(err_msg, sizeof(err_msg)-1);
-//            continue;
-//            // 进入错误状态：复位电机、通知视觉 "ERR"、亮红灯
-//        }
-        
-        osSemaphoreAcquire(MotionDoneSemHandle, osWaitForever);
-        
-        // ==========================================
-        // 【新增】检查是不是因为越界被拦截了
-        // ==========================================
-        if (g_motion_aborted) 
-        {
-            // 告诉视觉端：出错了，允许发下一个
-            uint8_t err_msg[] = "ERR\r\n"; 
-            while(CDC_Transmit_HS(err_msg, sizeof(err_msg)-1) == USBD_BUSY) 
+            // 3. 越界/异常检查（这里也不用加）
+            if (g_motion_aborted) 
             {
-                osDelay(1); 
+                uint8_t err_msg[] = "ERR\r\n"; 
+                while(CDC_Transmit_HS(err_msg, sizeof(err_msg)-1) == USBD_BUSY) osDelay(1); 
+                continue; 
             }
-            // 直接跳过计数和屏幕更新
-            continue; 
-        }
 
-        
-        //5.抓取成功，更新计数，通知屏幕
-        current_count++;
-        ScreenMsg_t smsg_add = {SCREEN_CMD_ADD_COUNT, current_row, current_count};
-        osMessageQueuePut(ScreenQueueHandle, &smsg_add, 0, 0);
-        
-        //6. 向RDK发送一个ACK，允许发下一个物料
-        uint8_t ack_msg[] = "OK\r\n"; 
-        while(CDC_Transmit_HS(ack_msg, sizeof(ack_msg)-1) == USBD_BUSY) 
-        {
-            osDelay(1); 
-        }
+            // 4. 【核心精简】抓取成功，把物料信息丢给屏幕任务去处理
+            ScreenMsg_t smsg;
+            smsg.shape_id = current_vision.M_shape_id;
+            smsg.color_id = current_vision.M_color_id;
+            osMessageQueuePut(ScreenQueueHandle, &smsg, 0, 0);
+            
+            // 5. 发送 OK
+            uint8_t ack_msg[] = "OK\r\n"; 
+            while(CDC_Transmit_HS(ack_msg, sizeof(ack_msg)-1) == USBD_BUSY) osDelay(1);
       }
-      
     osDelay(1);
   }
   /* USER CODE END MainTask */

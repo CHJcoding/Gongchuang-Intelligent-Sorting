@@ -86,9 +86,10 @@ elec-control_cj\freertos.o: ../Core/Inc/usart.h
 elec-control_cj\freertos.o: D:\Keil_v5\ARM\ARMCC\Bin\..\include\stdarg.h
 elec-control_cj\freertos.o: ../SCREEN/screen_config.h
 elec-control_cj\freertos.o: ../ADC_POWER/battery_driver.h
-elec-control_cj\freertos.o: ..\DEBUG\DEBUG.h
+elec-control_cj\freertos.o: ../DEBUG/DEBUG.h
 elec-control_cj\freertos.o: ../OLED/OLED.h
 elec-control_cj\freertos.o: ../OLED/ssd1306.h
 elec-control_cj\freertos.o: ../OLED/ssd1306_conf.h
 elec-control_cj\freertos.o: ../OLED/ssd1306_fonts.h
 elec-control_cj\freertos.o: ../BUTTON/BUTTON.h
+elec-control_cj\freertos.o: ..\SENSOR\SENSOR.h

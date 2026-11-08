@@ -1,4 +1,5 @@
 --cpu Cortex-M7.fp.dp
+"elec-control_cj\sensor.o"
 "elec-control_cj\usb_processing.o"
 "elec-control_cj\zdt_can.o"
 "elec-control_cj\emm_v5.o"

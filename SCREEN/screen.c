@@ -178,9 +178,9 @@ void screen_update_row(uint8_t row, const char *name, uint32_t pic_id, int32_t c
 //分别是：第几行，什么名字，图片id，抓取数量
 
 
-// =========================================================
-// 新增：自动根据视觉解析结果更新屏幕
-// =========================================================
+
+
+/*========== 后期删除 不需要 ==========*/
 /**
  * @brief 根据视觉识别结果自动更新屏幕指定行
  * @param target_row 屏幕上的目标行 (1~6)
@@ -200,4 +200,67 @@ void screen_update_vision(uint8_t target_row, int32_t count)
     
     // 3. 调用你原有的函数更新整行
     screen_update_row(target_row, name, pic_id, count);
+}
+/*========== ================ ==========*/
+
+
+
+/* ================== 重置版本（用于串口屏，无换行bug） ======================*/
+
+/**
+ * @brief 内部物料记录表
+ */
+typedef struct {
+    uint8_t shape_id;
+    uint8_t color_id;
+    int32_t count;
+} MaterialRecord_t;
+
+static MaterialRecord_t g_records[6]; // 固定 6 行（后期加了可以修改）
+static uint8_t g_material_types = 0;  // 当前已出现几种物料
+
+/**
+ * @brief 【核心业务】处理新抓到的物料，并更新屏幕
+ * @param shape_id 形状ID
+ * @param color_id 颜色ID
+ */
+void screen_handle_material(uint8_t shape_id, uint8_t color_id)
+{
+    if (shape_id >= 10 || color_id >= 10) return; // 越界保护（定义了10种，但是屏幕只有六种）【后期加上宏定义】
+
+    int target_row = -1;
+    int record_idx = -1;
+
+    // 1. 在已有记录中查找同种物料
+    for (int i = 0; i < g_material_types; i++) {
+        if (g_records[i].shape_id == shape_id && g_records[i].color_id == color_id) {
+            target_row = i + 1; // 行号 = 索引 + 1
+            record_idx = i;
+            break;
+        }
+    }
+
+    // 2. 没找到，新增一种物料（前提是屏幕没满）
+    if (record_idx == -1) {
+        if (g_material_types >= 6) {
+            return; // 已经显示 6 种了，不再新增
+        }
+        
+        record_idx = g_material_types;
+        target_row = record_idx + 1;
+        
+        g_records[record_idx].shape_id = shape_id;
+        g_records[record_idx].color_id = color_id;
+        g_records[record_idx].count = 0;
+        g_material_types++;
+    }
+
+    // 3. 数量加 1
+    g_records[record_idx].count++;
+
+    // 4. 组装数据并刷新屏幕
+    const char *name = shape_name_table[shape_id];
+    uint32_t pic_id = shape_color_pic_table[shape_id][color_id];
+    
+    screen_update_row(target_row, name, pic_id, g_records[record_idx].count);
 }
