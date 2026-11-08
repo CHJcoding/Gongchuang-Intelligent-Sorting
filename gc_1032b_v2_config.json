@@ -1,0 +1,15 @@
+{
+  "model_file": "/root/vision_ws/gc_1032b_v2.bin",
+  "model_name": "yolov8_lk",
+  "task_num": 4,
+  "dnn_Parser": "yolov8",
+  "model_output_count": 6,
+  "reg_max": 16,
+  "class_num": 8,
+  "cls_names_list": "/root/vision_ws/gc_best_1029_labels.list",
+  "strides": [8, 16, 32],
+  "score_threshold": 0.45,
+  "nms_threshold": 0.7,
+  "nms_top_k": 300,
+  "output_order": [0, 1, 2, 3, 4, 5]
+}

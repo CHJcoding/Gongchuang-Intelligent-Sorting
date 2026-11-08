@@ -1,0 +1,1657 @@
+# -*- coding: utf-8 -*-
+"""
+视觉分拣节点（本地 BPU 推理架构）。
+
+默认数据流：
+    hobot_usb_cam --/image(CompressedImage)--> 本节点
+      本节点：letterbox 预处理 -> pyeasy_dnn -> YOLOv8 解码 -> HSV 判色
+              -> 像素/毫米坐标 -> /vision/result + STM32 串口
+
+USE_LOCAL_DETECTION=False 时仍可订阅 /hobot_dnn_detection，作为回退路径。
+本地模式保证检测框与判色使用同一帧，不再依赖独立 dnn_node_example 进程。
+"""
+import json
+import os
+import queue
+import sys
+import threading
+import time
+from collections import deque
+
+import cv2
+import numpy as np
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import String, Bool
+from std_srvs.srv import Trigger
+from ai_msgs.msg import PerceptionTargets
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config as C
+import comm                       # 组帧用（模拟模式要打出真实字节）
+from color_classifier import classify_color, color_diag
+import grasp_refine
+import hand_eye
+import camera_model
+import safety
+from hand_eye import pixel_to_robot
+from yolov8_bpu import Yolov8Bpu
+
+
+# ============================ 串口工作线程 ============================
+class SerialWorker(threading.Thread):
+    """串口发送放到独立线程，绝不阻塞 ROS 回调。"""
+
+    def __init__(self, comm, node):
+        super().__init__(daemon=True)
+        self.comm = comm
+        self.node = node
+        self.q = queue.Queue(maxsize=8)
+        self.running = True
+        self.stop_event = threading.Event()
+
+    def submit(self, shape, color, x_mm, y_mm):
+        try:
+            self.q.put_nowait((shape, color, x_mm, y_mm))
+            return True
+        except queue.Full:
+            self.node.get_logger().warn("串口队列满，丢弃本次指令")
+            return False
+
+    def run(self):
+        while self.running:
+            try:
+                item = self.q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            shape, color, x_mm, y_mm = item
+            t0 = time.time()
+            ok = self.comm.send_grab(shape, color, x_mm, y_mm)
+            dt = (time.time() - t0) * 1000
+            if ok:
+                self.node.get_logger().info(
+                    "串口已发出 %.1fms | %s/%s (%d,%d) | 等待抓取完成(%s模式)" %
+                    (dt, shape, color, round(x_mm), round(y_mm),
+                     getattr(self.node, "grab_done_mode",
+                             getattr(C, "GRAB_DONE_MODE", "timer"))))
+            else:
+                self.node.get_logger().error(
+                    "串口发送失败 %.1fms | %s/%s" % (dt, shape, color))
+                self.node.on_send_failed()
+
+    def stop(self):
+        self.running = False
+        self.stop_event.wait(0.5)
+
+
+# ============================ 主节点 ============================
+class SortVisionNode(Node):
+    def __init__(self):
+        super().__init__("sort_vision_node")
+
+        # ---- 参数 ----
+        self.declare_parameter("auto_trigger", bool(getattr(C, "AUTO_TRIGGER", True)))
+        self.declare_parameter("serial_sim", bool(getattr(C, "SERIAL_SIM", False)))
+        # 安全闸：台架演示时可以显式绕过（默认不绕）
+        self.declare_parameter("allow_uncalibrated",
+                               bool(getattr(C, "ALLOW_UNCALIBRATED", False)))
+        # 抓取窗口时长：现场实测完可以不改代码，直接命令行覆盖
+        self.declare_parameter("grab_cycle_s",
+                               float(getattr(C, "GRAB_CYCLE_S", 6.0)))
+        self.declare_parameter("grab_timeout_s",
+                               float(getattr(C, "GRAB_TIMEOUT_S", 12.0)))
+        self.declare_parameter("grab_done_mode",
+                               str(getattr(C, "GRAB_DONE_MODE", "timer")))
+        # 台架自检：每秒把所有检测到的目标（含判色结果）打一行日志。
+        # 只影响日志，不影响触发；物料识别联调时开着最直观。
+        self.declare_parameter("scan_all", bool(getattr(C, "SCAN_ALL", False)))
+        # 扫描日志间隔（秒）。台架连续放料时调小到 0.3，日志才跟得上手速。
+        self.declare_parameter("scan_interval", 1.0)
+        self.auto_trigger = bool(self.get_parameter("auto_trigger").value)
+        self.serial_sim = bool(self.get_parameter("serial_sim").value)
+        self.allow_uncalibrated = bool(
+            self.get_parameter("allow_uncalibrated").value)
+        self.grab_cycle_s = float(self.get_parameter("grab_cycle_s").value)
+        self.grab_timeout_s = float(self.get_parameter("grab_timeout_s").value)
+        self.grab_done_mode = str(
+            self.get_parameter("grab_done_mode").value).lower()
+        self.scan_all = bool(self.get_parameter("scan_all").value)
+        self.scan_interval = max(0.1, float(self.get_parameter("scan_interval").value))
+        self.last_scan_t = 0.0
+        self.require_calib = bool(getattr(C, "SAFETY_REQUIRE_CALIB", True))
+
+        # ---- 帧缓存（按时间戳配对，避免用到过期画面）----
+        self.frames = deque(maxlen=20)
+        self.frame_lock = threading.Lock()
+
+        # ---- 状态 ----
+        self.armed = self.auto_trigger     # 是否允许触发一次分拣
+        self.busy = False                  # 是否处于一次抓取窗口（期间屏蔽检测）
+        self.grab_start = 0.0              # 本次抓取开始时刻
+        self.grab_start_mono = 0.0         # 单调时钟：不受系统时间跳变影响
+        self.blank_until = 0.0             # 检测屏蔽截止时刻（抓取中 + 收臂期）
+        self.blank_until_mono = 0.0        # 检测屏蔽截止时刻（单调时钟）
+        self.last_fire_t = 0.0
+        self.last_fire_mono = 0.0          # 下发冷却（单调时钟）
+        self.lock_center = None            # 已下发目标的位置，防重复抓同一物料
+        self.wait_ok_flag = False         # 正在严格等 32 的抓取完成 OK
+        self._wait_relog_t = 0.0           # 上次提醒「还在等」的时刻
+        self.stuck_logged = False          # 硬超时只报一次
+        self.stat_stuck = 0                # 因为等不到 OK 而暂停的次数
+        self.stat_early_ack = 0            # 过早的完成字节（其实是 ACK）次数
+        self.img_seq = 0                  # 收到图像的序号（每帧 +1，用来判断新帧）
+        self.arm_seq = 0                  # 上次抓取结束时的帧序号：之后的新帧才可用
+        self.stat_wait_frame = 0          # 在等「OK 之后的新帧」而放过的帧数
+        self.stat_img = 0                 # 收到的图像帧数（算相机帧率用）
+        self._cam_fps = 0.0               # 相机帧率（EMA）
+        self._last_img_t = 0.0
+        self.stat_out_range = 0            # 坐标越出工作空间被打回的次数
+        self.stat_stable = 0               # 在等「连续几帧都在同一位置」的次数
+        self._cand_c = None                # 上一帧最高分目标的中心（稳定性判定）
+        self._cand_hits = 0                # 该位置已连续确认的帧数
+        self.lock_time = 0.0
+        self.stat_det = 0                  # 收到检测消息数
+        self.stat_hit = 0                  # 含有效目标的消息数
+        self.stat_fire = 0                 # 实际下发次数
+        self.stat_blank = 0                # 因抓取窗口被屏蔽的检测消息数
+        self.stat_reject = 0               # 32 回 ERR 的次数（坐标被限位保护拒收）
+        self.rejects = []                  # [(x_mm, y_mm, t)] 被拒位置黑名单
+        self.grab_hist = deque(maxlen=64)   # [(x_mm, y_mm, t)] 已下发过的位置
+        self.grab_frame_seq = 0            # 本次下发来自哪一帧（img_seq）
+        self.grab_frame_stamp = ""         # 本次下发帧的 ROS 时间戳
+        self.stat_repeat_skip = 0           # 同一处下发过多而被跳过的目标数
+        self.last_sent_xy = None           # 最近一次真正下发的 (x, y) mm
+        self.last_sent_desc = None         # 最近一次下发的是哪一颗
+        self.last_sent_key = None          # 最近一次下发的 (shape, color)，同类优先用
+        self.last_sent_t = 0.0
+        self.stat_color_fail = 0
+        self.stat_blocked = 0              # 被安全闸拦下的次数
+        self.stat_send_fail = 0            # 串口写失败次数
+        self.stat_edge = 0                 # 目标落在去畸变覆盖区外的次数
+        self.stat_refine_ok = 0            # 抓取点精修成功（用轮廓点）次数
+        self.stat_refine_fb = 0            # 精修回退到框中心的次数
+        self.last_reopen_t = 0.0           # 上次尝试重连串口的时刻
+        self.last_infer_t = 0.0
+        self.stat_infer_ms = 0.0
+
+        # ---- 本地 BPU 推理 ----
+        self.use_local_detection = bool(
+            getattr(C, "USE_LOCAL_DETECTION", True))
+        self.detector = None
+        if self.use_local_detection:
+            self.detector = Yolov8Bpu(
+                C.YOLO_BIN_MODEL,
+                C.YOLO_CLASS_NAMES,
+                conf_thres=C.YOLO_CONF_THRES,
+                iou_thres=C.YOLO_IOU_THRES,
+                verbose=True)
+
+        # ---- 发布 ----
+        self.pub_result = self.create_publisher(String, C.RESULT_TOPIC, 10)
+        self.pub_state = self.create_publisher(String, "/sort/state", 10)
+        self.pub_debug = self.create_publisher(String, "/sort/debug", 10)
+        self.pub_debug_image = None
+        self._dbg_tick = 0
+        self._dbg_reason = {}
+        if getattr(C, "PUBLISH_DEBUG_IMAGE", True):
+            self.pub_debug_image = self.create_publisher(
+                CompressedImage, C.DEBUG_IMAGE_TOPIC, 10)
+        # 夹爪坐标回显（POS_ENABLE=True 才建话题，避免没开时挂个空话题）
+        self.pub_pos = None
+        if getattr(C, "POS_ENABLE", False):
+            self.pub_pos = self.create_publisher(
+                String, getattr(C, "POS_TOPIC", "/gantry/pos"), 10)
+
+        # ---- 订阅 ----
+        img_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST)
+        self.create_subscription(CompressedImage, C.IMG_TOPIC,
+                                 self.on_image, img_qos)
+        if not self.use_local_detection:
+            self.create_subscription(PerceptionTargets, C.DET_TOPIC,
+                                     self.on_detection, 10)
+        self.create_subscription(Bool, "/sort/start", self.on_start, 10)
+        self.create_subscription(Bool, "/sort/reset", self.on_reset, 10)
+
+        # 标定热加载：标定完不用重启节点
+        self.create_service(Trigger, "/sort/reload_calib", self.on_reload_calib)
+
+        # ---- 串口 ----
+        self.comm = None
+        self.serial_worker = None
+        # ---- 上电归零握手状态 ----
+        self.homed = not bool(getattr(C, "HOMING_REQUIRED", False))
+        self.home_wait_since = time.time()
+        self._home_warn_t = 0.0
+        # ---- 串口看门狗（2026-10-30）----
+        self._wdt_t = 0.0                 # 上次探链路的时刻
+        self._was_homed = False           # 掉线前是否已经归零过
+        self._loss_devnum = None          # 掉线前那次 USB 连接的编号
+        self._homing_grace_s = 0.0        # 重连后等 OK 的宽限（0=严格等）
+        self._stat_link_loss = 0          # 掉线次数（统计行里能看到）
+        self.serial_ok = bool(self.serial_sim)     # 模拟模式视为"可用"
+        self._init_serial()
+
+        # ---- 定时器：状态心跳 + 统计 ----
+        self.create_timer(5.0, self.on_timer)
+        # 抓取窗口看门狗：判定"抓完了"并解除屏蔽（10Hz）
+        self.create_timer(0.1, self.on_grab_watchdog)
+        self.get_logger().info(
+            "sort_vision_node 启动 | det=%s img=%s result=%s | auto=%s sim=%s | "
+            "完成判定=%s(cycle=%.1fs timeout=%.1fs)"
+            % ("本地BPU" if self.use_local_detection else C.DET_TOPIC,
+               C.IMG_TOPIC, C.RESULT_TOPIC,
+               self.auto_trigger, self.serial_sim,
+               self.grab_done_mode, self.grab_cycle_s, self.grab_timeout_s))
+
+        # 手眼标定状态：没标定就大声报，别让人拿假坐标去驱动龙门
+        hand_eye.warn_if_uncalibrated(self.get_logger())
+        # 去畸变：广角镜头边缘偏十几毫米，必须和标定时状态一致
+        camera_model.warn_if_disabled(self.get_logger())
+        try:
+            camera_model.check_hand_eye_consistency(
+                getattr(hand_eye, "META", {}) or {}, self.get_logger())
+        except Exception as e:                        # noqa: BLE001
+            self.get_logger().warn("去畸变/标定一致性检查失败: %s" % (e,))
+        # 安全闸状态：一眼看出"现在到底能不能动"
+        # 注意：两个调用必须在不同代码行 —— rclpy 按调用点缓存 severity，
+        # 同一行用两种 severity 会抛 ValueError。
+        for _level, _line in safety.describe_gates(
+                self.require_calib, self.allow_uncalibrated,
+                hand_eye.is_calibrated(), self.serial_ok, self.serial_sim,
+                getattr(C, "SERIAL_SIM_ON_FAIL", False)):
+            if _level == "warn":
+                self.get_logger().warn(_line)
+            else:
+                self.get_logger().info(_line)
+        if getattr(C, "POS_ENABLE", False):
+            self.get_logger().info(
+                "夹爪坐标回传已开启 | 帧头=0x%02X 长度=%d 话题=%s"
+                % (getattr(C, "POS_FRAME_HEAD", 0x07),
+                   getattr(C, "POS_FRAME_LEN", 6),
+                   getattr(C, "POS_TOPIC", "/gantry/pos")))
+
+    # ---------------- 串口 ----------------
+    def _init_serial(self):
+        if self.serial_sim:
+            self.get_logger().warn("serial_sim=True：不连下位机，只打印指令")
+            self.serial_ok = True
+            self.homed = True
+            return
+        try:
+            from comm import Comm
+            self.comm = Comm()
+            self.comm.open()
+            self.serial_worker = SerialWorker(self.comm, self)
+            self.serial_worker.start()
+            self.serial_ok = True
+            self.get_logger().info("串口已打开 %s @%d" % (self._comm_port(), C.SERIAL_BAUD))
+            self._reset_homing()
+        except Exception as e:
+            self.comm = None
+            self.serial_worker = None
+            self.serial_ok = False
+            if getattr(C, "SERIAL_SIM_ON_FAIL", False):
+                # 台架模式：打不开就当模拟，照常打印
+                self.get_logger().warn(
+                    "串口打开失败（%s: %s），按 SERIAL_SIM_ON_FAIL=True "
+                    "退化为模拟模式（不会真的发给 STM32）" %
+                    (type(e).__name__, e))
+                self.serial_sim = True
+                self.serial_ok = True
+                self.homed = True
+            else:
+                # 生产模式：明确报错，拒绝下发，并周期性重试
+                self.get_logger().error(
+                    "串口打开失败（%s: %s）—— 进入【串口故障】状态，拒绝下发。"
+                    "检查 %s 是否插好（ls /dev/ttyACM* 或 ls /dev/serial/by-id/）、"
+                    "是否被别的程序占用，插好后会自动重连（每 %.0fs 试一次）" %
+                    (type(e).__name__, e, self._comm_port(),
+                       getattr(C, "SERIAL_REOPEN_S", 5.0)))
+                self._publish_state("SERIAL_ERROR")
+
+    # ---------------- 上电归零握手 ----------------
+    def _reset_homing(self, keep_homed=False, grace_s=0.0):
+        """回到"等 STM32 归零完成 OK"的状态（串口刚打开/刚恢复时调用）。
+
+        keep_homed=True：串口只是抖了一下，32 没复位（devnum 没变），
+                         之前的归零依然有效，不重等 OK（否则会永久卡住）。
+        grace_s：重连后最多等这么久 OK，超时按"32 没复位"继续。
+        """
+        if self.serial_sim or self.comm is None:
+            self.homed = True
+            self._homing_grace_s = 0.0
+            return
+        self.home_wait_since = time.time()
+        self._home_warn_t = 0.0
+        self._homing_grace_s = max(0.0, float(grace_s or 0.0))
+        if keep_homed:
+            self.homed = True
+            self.get_logger().warn(
+                "[归零] 串口恢复，仍是同一次 USB 连接（%s）→ 32 没复位，"
+                "沿用已归零状态，不重等 OK"
+                % (getattr(self.comm, "devnum", "?")))
+            self._publish_state("HOMED")
+            return
+        self.homed = not bool(getattr(C, "HOMING_REQUIRED", False))
+        if not self.homed:
+            self.get_logger().info(
+                "[归零] 等待 STM32 上电回零完成的 OK（收到前不下发任何物料）")
+            self._publish_state("WAIT_HOME")
+
+    def _check_homing(self, now):
+        """
+        整条流程的第一步：等 STM32 回零完成。
+
+        现场约定：32 上电自己回零，到点后发一个完成信号（0x06 或文本 "OK"），
+        和抓放完成用的是同一个信号。所以「上电后第一个 OK」= 归零完成，
+        之后每个 OK = 一次抓放完成，由 _end_grab 消费。
+        """
+        if self.homed:
+            return
+        if self.comm is not None and self.comm.poll_done():
+            self.homed = True
+            self.get_logger().info(
+                "[归零] 收到 STM32 归零完成 OK（当前帧#%d，等了 %.1fs），"
+                "开始下发第一颗物料"
+                % (self.img_seq, now - self.home_wait_since))
+            self._publish_state("HOMED")
+            return
+        waited = now - self.home_wait_since
+        grace = self._homing_grace_s
+        if grace > 0.0 and waited >= grace:
+            self.homed = True
+            self._homing_grace_s = 0.0
+            self.get_logger().warn(
+                "[归零] 串口重连后等了 %.0fs 没收到 OK —— 32 没复位，按已归零继续"
+                "（SERIAL_REHOME_ASSUME_HOMED_S=%.0f，设 0 可改为一直等）"
+                % (waited, grace))
+            self._publish_state("HOME_ASSUMED")
+            return
+        bypass = float(getattr(C, "HOMING_BYPASS_AFTER_S", 0.0) or 0.0)
+        if bypass > 0.0 and waited >= bypass:
+            self.homed = True
+            self.get_logger().warn(
+                "[归零] 等了 %.0fs 没有 OK，按 HOMING_BYPASS_AFTER_S=%.0f 放行"
+                % (waited, bypass))
+            self._publish_state("HOME_BYPASS")
+            return
+        every = float(getattr(C, "HOMING_LOG_EVERY_S", 10.0))
+        if now - self._home_warn_t >= every:
+            self._home_warn_t = now
+            self.get_logger().warn(
+                "[归零] 等待 STM32 归零完成信号... 已等 %.0fs（串口%s）"
+                % (waited, "已连接" if self.serial_ok else "未连上"))
+
+    def _comm_port(self):
+        """日志里显示"实际用哪个串口"：已打开就报真实设备，否则报解析出来的候选。
+
+        STM32 是 USB CDC，拔插后可能从 ttyACM0 变成 ttyACM1，
+        所以日志要打真实解析结果，不能只打 config 里的写死值。
+        """
+        port = getattr(self.comm, "port", None) if self.comm is not None else None
+        if port:
+            return port
+        try:
+            from comm import resolve_serial_port
+            return resolve_serial_port()
+        except Exception:                              # noqa: BLE001
+            return C.SERIAL_PORT
+
+    # ---------------- 串口看门狗（2026-10-30）----------------
+    def _drop_serial(self, why):
+        """
+        发现链路不可信时主动把句柄扔掉，交给 _try_reopen_serial 重连。
+
+        为什么必须主动扔：拔线/32 复位后 pyserial 的 is_open() 仍是 True，
+        而原来的代码只在"写失败"时才置 serial_ok=False。归零闸在写之前就 return，
+        于是「不写 → 发现不了掉线 → 不重连 → 一直等一个不会来的 OK」，
+        现场就这么卡了 4 分钟。
+        """
+        self._was_homed = bool(self.homed)
+        self._loss_devnum = getattr(self.comm, "devnum", None) if self.comm else None
+        self._stat_link_loss += 1
+        self.serial_ok = False
+        old = getattr(self.comm, "port", "?") if self.comm else "?"
+        if self.serial_worker is not None:
+            try:
+                self.serial_worker.stop()
+            except Exception:                      # noqa: BLE001
+                pass
+            self.serial_worker = None
+        if self.comm is not None:
+            try:
+                self.comm.close()
+            except Exception:                      # noqa: BLE001
+                pass
+        self.get_logger().error(
+            "串口掉线（%s）：%s 不可用了（第 %d 次），已丢句柄，%.0fs 后重连；"
+            "归零状态%s"
+            % (why, old, self._stat_link_loss,
+               float(getattr(C, "SERIAL_REOPEN_S", 5.0)),
+               "保留" if self.homed else "未获得"))
+        self._publish_state("SERIAL_LOST")
+
+    def _serial_watchdog(self):
+        """每 SERIAL_WATCHDOG_S 秒探一次链路，坏了就重连。
+
+        这是"串口不漂移"的一半：另一半是 udev 稳定符号链接 /dev/ttyGC
+        （不管枚举成 ttyACM0 还是 ACM1，名字都不变）。
+        """
+        if self.serial_sim:
+            return
+        now = time.time()
+        if now - self._wdt_t < float(getattr(C, "SERIAL_WATCHDOG_S", 0.5)):
+            return
+        self._wdt_t = now
+        if self.serial_ok and self.comm is not None:
+            try:
+                state = self.comm.link_state()
+            except Exception:                      # noqa: BLE001
+                state = "hungup"
+            if state != "ok":
+                self._drop_serial(state)
+                self.last_reopen_t = 0.0           # 允许下一拍立刻试一次
+                return
+        if not self.serial_ok:
+            self._try_reopen_serial()
+
+    def _busy_text(self):
+        """busy 的真实含义：抓取中 / 严格等 32 的抓取完成 OK。"""
+        if not self.busy:
+            return "False"
+        el = max(0.0, time.monotonic() - self.grab_start_mono)
+        if getattr(self, "wait_ok_flag", False):
+            return "等OK(%.1fs)" % el
+        return "抓取中(%.1fs)" % el
+
+    def _serial_state_text(self):
+        """统计行里的串口字段：一眼看出用的哪个口、掉过几次。"""
+        if self.serial_sim:
+            return "模拟"
+        if self.serial_ok:
+            txt = "正常(%s)" % getattr(self.comm, "port", "?")
+            if self._stat_link_loss:
+                txt += " 掉线%d次" % self._stat_link_loss
+            return txt
+        return "故障(重连中)"
+
+    # ---- 调试用短字段：每行日志都能看到串口开没开、归零到没到 ----
+    def _serial_flag(self):
+        if self.serial_sim:
+            return "串口=SIM"
+        if self.serial_ok:
+            dn = getattr(self.comm, "devnum", None)
+            return "串口=开(%s%s@%d)" % (
+                getattr(self.comm, "port", "?"),
+                ("→%s" % dn) if dn else "", int(C.SERIAL_BAUD))
+        return "串口=关(重连中)"
+
+    def _home_flag(self):
+        return "归零=OK" if self.homed else "归零=等OK"
+
+    @staticmethod
+    def _bbox_text(bbox):
+        """像素框中心 + 尺寸，例：px(221,316) 101x111"""
+        x1, y1, x2, y2 = [int(round(v)) for v in bbox]
+        return "px(%d,%d) %dx%d" % ((x1 + x2) // 2, (y1 + y2) // 2,
+                                    max(0, x2 - x1), max(0, y2 - y1))
+
+    def _target_line(self, t):
+        """一个目标一行看完：颜色/形状(模型类别)/像素中心+框尺寸/毫米/分数。"""
+        xy = self._target_xy_mm(t)
+        col = t.get("color")
+        return "%s-%s cls=%s %s mm=(%s) 分=%.2f" % (
+            C.COLOR_NAMES_CN.get(col, col) if col else "判色失败",
+            C.SHAPE_NAMES_CN.get(t["shape"], t["shape"]),
+            t.get("class_name") or "-", self._bbox_text(t["bbox"]),
+            ("%.0f,%.0f" % xy) if xy else "?", float(t.get("conf", 0.0)))
+
+    def _log_targets(self, tag, targets, throttle=1.0):
+        """一行打出这批目标 + 串口/归零状态（现场调试主要看这行）。"""
+        self.get_logger().info(
+            "[%s] %d 个 | %s | %s %s" %
+            (tag, len(targets),
+             " ; ".join(self._target_line(t) for t in targets[:4]),
+             self._serial_flag(), self._home_flag()),
+            throttle_duration_sec=throttle)
+
+    def _try_reopen_serial(self):
+        """串口掉了以后周期性重连（USB 转串口热插拔能自愈）。"""
+        if self.serial_sim or self.serial_ok:
+            return
+        now = time.time()
+        period = float(getattr(C, "SERIAL_REOPEN_S", 5.0))
+        if now - self.last_reopen_t < period:
+            return
+        self.last_reopen_t = now
+        try:
+            from comm import Comm
+            if self.comm is None:
+                self.comm = Comm()
+            if self.comm.reopen():
+                self.serial_ok = True
+                self.serial_worker = SerialWorker(self.comm, self)
+                self.serial_worker.start()
+                self.get_logger().info("串口已恢复 %s @%d (devnum=%s)" %
+                                       (self._comm_port(), C.SERIAL_BAUD,
+                                        getattr(self.comm, "devnum", "?")))
+                self._publish_state("SERIAL_OK")
+                same = (getattr(self.comm, "devnum", None) is not None and
+                        self._loss_devnum is not None and
+                        self.comm.devnum == self._loss_devnum)
+                self._reset_homing(
+                    keep_homed=bool(same and self._was_homed),
+                    grace_s=float(getattr(C, "SERIAL_REHOME_ASSUME_HOMED_S", 0.0) or 0.0))
+            else:
+                self.get_logger().warn("串口仍打不开，%.0fs 后重试" % period,
+                                       throttle_duration_sec=15.0)
+        except Exception as e:                        # noqa: BLE001
+            self.comm = None
+            self.get_logger().warn("串口重连异常: %s: %s"
+                                   % (type(e).__name__, e),
+                                   throttle_duration_sec=15.0)
+
+    # ---------------- 抓取窗口：如何判定"抓完了" ----------------
+    def on_send_failed(self):
+        """串口发送失败：立即解除抓取窗口，并标记串口掉线等重连。"""
+        self.stat_send_fail += 1
+        self.serial_ok = False
+        self.busy = False
+        self.blank_until = 0.0
+        self.blank_until_mono = 0.0
+        self._publish_state("SEND_FAIL")
+        self.get_logger().error(
+            "串口写失败（USB 转串口掉了？），暂停下发并开始重连",
+            throttle_duration_sec=5.0)
+
+    def on_grab_watchdog(self):
+        """
+        10Hz 检查抓取窗口是否该结束。
+
+          timer 模式：发出去后按 GRAB_CYCLE_S 定时解锁（STM32 无需任何回报）
+          byte  模式：等 STM32 在动作结束时回的 GRAB_DONE_BYTE，超时则兜底解锁
+
+        顺带把 STM32 回传的夹爪坐标取出来发话题（POS_ENABLE=True 时）。
+        注意：坐标回传和完成字节共用同一条串口，必须都在这里轮询，
+        由 comm 的统一解析泵拆分，谁也不会吃掉谁的字节。
+        """
+        self._serial_watchdog()
+        self._poll_gantry_pos()
+        if not self.homed:
+            self._check_homing(time.time())
+            if not self.homed:
+                return
+        if not self.busy:
+            return
+        now = time.time()
+        now_mono = time.monotonic()
+        elapsed = now_mono - self.grab_start_mono
+        mode = self.grab_done_mode
+
+        # ---- 32 的越界保护：回 "ERR" = 坐标超限、没动作 ----
+        # 不看这个就只能等 GRAB_TIMEOUT_S 超时，而且会对着同一颗物料反复撞限位。
+        if getattr(C, "GRAB_ERR_ENABLE", True) and self.comm is not None:
+            try:
+                got_err = self.comm.poll_err()
+            except Exception:
+                got_err = False
+            if got_err:
+                self._on_32_err(elapsed)
+                return
+
+
+        if mode == "byte":
+            if self.comm is not None:
+                if getattr(C, "GRAB_STATUS_ENABLE", False):
+                    # 2 字节协议：0x06 + status（当前未启用）
+                    seen, status = self.comm.poll_done_status()
+                    if seen:
+                        self._end_grab("DONE", elapsed, status)
+                        return
+                elif self.comm.poll_done():
+                    # 1 字节协议：只表示"抓完了"。
+                    # 现场 2026-10-30：32 有时收到帧 0.01~0.11s 就回这个字节，
+                    # 那是「收到」ACK（与 GRAB_DONE_BYTE 同值 0x06），不是抓完；
+                    # 真实抓取周期 12~20s。太早的完成字节一律当 ACK 丢掉。
+                    if elapsed < getattr(C, "GRAB_DONE_MIN_S", 1.5):
+                        self.stat_early_ack += 1
+                        self.get_logger().info(
+                            "忽略过早的完成字节(%.2fs)：当 32 的收到 ACK，继续等抓完"
+                            % elapsed, throttle_duration_sec=2.0)
+                    else:
+                        self._end_grab("DONE", elapsed)
+                        return
+            if elapsed >= self.grab_timeout_s:
+                if getattr(C, "GRAB_REQUIRE_OK", True):
+                    # 严格握手：没收到 32 的「抓取完成」就一直等，
+                    # 绝不在 32 还在动的时候发下一个坐标。
+                    if not self.wait_ok_flag:
+                        self.wait_ok_flag = True
+                        self._wait_relog_t = now_mono
+                        self.get_logger().warn(
+                            "抓取完成字节没来（已 %.1fs），进入严格等待："
+                            "收到 OK 才发下一个坐标" % elapsed)
+                    elif now_mono - self._wait_relog_t >= getattr(
+                            C, "GRAB_WAIT_RELOG_S", 3.0):
+                        self._wait_relog_t = now_mono
+                        self.get_logger().warn(
+                            "还在等 STM32 抓取完成 OK，已等 %.1fs（上限 %.0fs），期间不下发"
+                            % (elapsed, getattr(C, "GRAB_HARD_TIMEOUT_S", 60.0)))
+                    if elapsed >= getattr(C, "GRAB_HARD_TIMEOUT_S", 60.0) \
+                            and not self.stuck_logged:
+                        self.stuck_logged = True
+                        self.stat_stuck += 1
+                        self.armed = False
+                        self.get_logger().error(
+                            "%.0fs 没收到抓取完成 OK，已暂停自动下发"
+                            "（检查 32 的完成信号，再发 /sort/start 重新开始）"
+                            % elapsed)
+                        self._publish_state("GRAB_STUCK")
+                    return
+                self.get_logger().warn(
+                    "抓取完成字节超时(%.1fs)，强制解锁（下位机是否没发完成信号？）"
+                    % elapsed)
+                self._end_grab("TIMEOUT", elapsed)
+        else:
+            if elapsed >= self.grab_cycle_s:
+                self._end_grab("TIMER", elapsed)
+
+    # ---------------- 32 越界保护（ERR）----------------
+    def _on_32_err(self, elapsed):
+        """
+        32 回 ERR：坐标落在限位保护范围外，它没动作。
+
+        处理：立刻解锁（不等 GRAB_TIMEOUT_S）、放开检测重新识别。
+        是否把这个位置临时拉黑由 GRAB_ERR_BLACKLIST_ENABLE 控制。
+        """
+        self.stat_reject += 1
+        blacklist = bool(getattr(C, "GRAB_ERR_BLACKLIST_ENABLE", False))
+        ttl = float(getattr(C, "GRAB_ERR_BLACKLIST_TTL_S", 120.0))
+        r0 = self.last_sent_xy
+        frame_text = "下发帧#%d stamp=%s" % (
+            self.grab_frame_seq, self.grab_frame_stamp or "?")
+        if r0 is not None:
+            if blacklist:
+                self.rejects.append((r0[0], r0[1], time.time()))
+                self.rejects = [r for r in self.rejects
+                                if time.time() - r[2] < ttl]
+            self.get_logger().warn(
+                "32 回 ERR：坐标 (%d,%d) 超出限位保护，未执行"
+                "（%s，窗口已用 %.2fs）。%s"
+                % (r0[0], r0[1], frame_text, elapsed,
+                   ("该位置拉黑 %.0fs，重新识别其它物料" % ttl)
+                   if blacklist else "ERR 拉黑已关闭，重新识别"))
+        else:
+            self.get_logger().warn(
+                "32 回 ERR：坐标超出限位保护，未执行"
+                "（%s，窗口已用 %.2fs）。%s"
+                % (frame_text, elapsed,
+                   "该位置拉黑 %.0fs" % ttl if blacklist else "ERR 拉黑已关闭"))
+        self.busy = False
+        self.lock_center = None
+        blank_s = float(getattr(C, "BLANK_AFTER_ERR_S", 0.5))
+        self.blank_until = time.time() + blank_s
+        self.blank_until_mono = time.monotonic() + blank_s
+        self._publish_state("GRAB_ERR")
+
+    def _target_xy_mm(self, target):
+        """框中心 → 龙门毫米（去畸变 + 手眼仿射）；失败返回 None。"""
+        x1, y1, x2, y2 = target["bbox"]
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        try:
+            cx_u, cy_u = camera_model.undistort_point(cx, cy)
+            x_mm, y_mm, _ = pixel_to_robot(cx_u, cy_u)
+            return (float(x_mm), float(y_mm))
+        except Exception as e:
+            self.get_logger().debug("坐标换算失败：%s" % (e,))
+            return None
+
+    def _in_workspace(self, x_mm, y_mm):
+        """毫米坐标是否在允许的工作空间内（未配置 = 不限）。"""
+        if getattr(C, "WORKSPACE_X_MAX", None) is None:
+            return True
+        return (C.WORKSPACE_X_MIN <= x_mm <= C.WORKSPACE_X_MAX and
+                C.WORKSPACE_Y_MIN <= y_mm <= C.WORKSPACE_Y_MAX)
+
+    def _is_rejected_target(self, target):
+        """该目标（按毫米坐标）是否落在被 32 拒过的位置附近。"""
+        if not self.rejects:
+            return False
+        x1, y1, x2, y2 = target["bbox"]
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        try:
+            cx_u, cy_u = camera_model.undistort_point(cx, cy)
+        except Exception:
+            cx_u, cy_u = cx, cy
+        try:
+            x_mm, y_mm, _ = pixel_to_robot(cx_u, cy_u)
+        except Exception:
+            return False
+        rad = float(getattr(C, "GRAB_ERR_BLACKLIST_MM", 30.0))
+        for r in self.rejects:
+            if (x_mm - r[0]) ** 2 + (y_mm - r[1]) ** 2 <= rad * rad:
+                return True
+        return False
+
+
+    def _poll_gantry_pos(self):
+        """取 STM32 回传的夹爪坐标并发话题（POS_ENABLE=False 时直接返回）。"""
+        if not getattr(C, "POS_ENABLE", False) or self.comm is None:
+            return
+        try:
+            pos = self.comm.poll_position_f()
+        except Exception:
+            return
+        if pos is None or self.pub_pos is None:
+            return
+        info = getattr(self.comm, "latest_pos_text", None) or {}
+        payload = {"x": pos[0], "y": pos[1],
+                   "valid": getattr(self.comm, "pos_valid", None),
+                   "seq": self.comm.position_seq}
+        if info.get("adeg") is not None:
+            payload["adeg"] = info.get("adeg")
+        if info.get("bdeg") is not None:
+            payload["bdeg"] = info.get("bdeg")
+        self.pub_pos.publish(String(data=json.dumps(payload,
+                                                   ensure_ascii=False)))
+
+    def _end_grab(self, reason, elapsed, status=None):
+        """
+        结束抓取窗口：解除 busy、开始收臂屏蔽、允许抓下一个物料。
+        status 仅在 2 字节协议（GRAB_STATUS_ENABLE=True）下由下位机回报。
+        """
+        if getattr(C, "SORT_ONE_BY_ONE", True):
+            # 严格单发：这次抓取结束了，从现在起抓到的「新一帧」才允许再下发。
+            self.arm_seq = self.img_seq
+        self.busy = False
+        self.lock_center = None            # 物料已被搬走，解除位置锁定
+        blank_s = getattr(C, "BLANK_AFTER_DONE_S", 0.8)
+        self.blank_until = time.time() + blank_s
+        self.blank_until_mono = time.monotonic() + blank_s
+        frame_text = "下发帧#%d stamp=%s" % (
+            self.grab_frame_seq, self.grab_frame_stamp or "?")
+        if status is not None:
+            ok = (status == getattr(C, "GRAB_STATUS_OK", 0x00))
+            label = getattr(C, "GRAB_STATUS_NAMES", {}).get(
+                status, "UNKNOWN(0x%02X)" % status)
+            self.get_logger().info(
+                "抓取结束[%s] %s 用时 %.2fs 下位机回报=%s，%.1fs 后恢复检测"
+                % (reason, frame_text, elapsed, label,
+                   getattr(C, "BLANK_AFTER_DONE_S", 0.8)))
+            self._publish_state("GRAB_OK" if ok else "GRAB_FAIL")
+            return
+        if reason == "DONE":
+            self.get_logger().info(
+                "STM32 回 OK | %s | 等待 %.2fs | %.1fs 后恢复检测"
+                % (frame_text, elapsed,
+                   getattr(C, "BLANK_AFTER_DONE_S", 0.8)))
+        else:
+            self.get_logger().info(
+                "抓取结束[%s] %s 用时 %.2fs，%.1fs 后恢复检测"
+                % (reason, frame_text, elapsed,
+                   getattr(C, "BLANK_AFTER_DONE_S", 0.8)))
+        self._publish_state("GRAB_" + reason)
+
+    # ---------------- 订阅回调 ----------------
+    def on_image(self, msg):
+        try:
+            buf = np.frombuffer(bytes(msg.data), dtype=np.uint8)
+            frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        except Exception as e:
+            self.get_logger().warn("图像解码失败: %s" % e)
+            return
+        if frame is None:
+            return
+        key = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        with self.frame_lock:
+            self.frames.append((key, frame))
+        self.img_seq += 1                # 严格单发：OK 后要等这一帧之后的新帧
+        self.stat_img += 1
+        now_t = time.time()
+        if self._last_img_t > 0.0:
+            inst = 1.0 / max(1e-6, now_t - self._last_img_t)
+            self._cam_fps = (inst if self._cam_fps <= 0.0
+                             else 0.9 * self._cam_fps + 0.1 * inst)
+        self._last_img_t = now_t
+
+        if self.detector is None:
+            return
+
+        now = time.time()
+        period = max(0.0, float(getattr(C, "YOLO_INFER_PERIOD_S", 0.05)))
+        if now - self.last_infer_t < period:
+            return
+        self.last_infer_t = now
+        self._run_local_detection(frame, msg.header.stamp)
+
+    def _pick_frame(self, stamp):
+        key = stamp.sec * 1_000_000_000 + stamp.nanosec
+        with self.frame_lock:
+            if not self.frames:
+                return None
+            best, best_dt = None, 1 << 62
+            for k, f in self.frames:
+                dt = abs(k - key)
+                if dt < best_dt:
+                    best, best_dt = f, dt
+            return best
+
+    def _run_local_detection(self, frame, stamp):
+        """在当前图像回调里直接推理，检测框和后续判色使用同一帧。"""
+        t0 = time.perf_counter()
+        try:
+            detections = self.detector.detect(frame)
+        except Exception as e:                       # noqa: BLE001
+            self.get_logger().error(
+                "本地 YOLOv8 推理失败: %s: %s" % (type(e).__name__, e),
+                throttle_duration_sec=2.0)
+            return
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.stat_det += 1
+        self.stat_infer_ms = 0.9 * self.stat_infer_ms + 0.1 * elapsed_ms
+        self._publish_debug_image(frame, stamp, detections)
+
+        targets = []
+        for d in detections:
+            if d.score < C.YOLO_CONF_THRES:
+                continue
+            shape, color = C.parse_yolo_class(d.name)
+            if shape is None or color is None:
+                self.get_logger().warn(
+                    "无法解析 YOLO 类别: %s" % d.name,
+                    throttle_duration_sec=5.0)
+                continue
+            targets.append({
+                "shape": shape,
+                "color": color,
+                "class_name": d.name,
+                "color_conf": float(d.score),
+                "conf": float(d.score),
+                "bbox": [int(round(d.x1)), int(round(d.y1)),
+                         int(round(d.x2)), int(round(d.y2))],
+            })
+        self._process_targets(targets, stamp, frame)
+
+    def _publish_debug_image(self, frame, stamp, detections):
+        """把本地推理结果画进 JPEG：贴合旋转框 + 抓取点 + 原始框。
+
+        WebSocket 预览订阅这个话题，不依赖 ai_msgs parser。
+        画不出来的原因（颜色判不出 / 掩膜不实心 / 尺寸不合理）会累计到
+        self._dbg_stat，每 5 秒打一行，方便现场判断是哪一类失败。
+        """
+        if self.pub_debug_image is None:
+            return
+        canvas = frame.copy()
+        n_fit = n_rect = n_valid = 0
+        for d in detections:
+            raw_bbox = [int(round(d.x1)), int(round(d.y1)),
+                        int(round(d.x2)), int(round(d.y2))]
+            x1, y1, x2, y2 = raw_bbox
+            shape_name, color_name = C.parse_yolo_class(d.name)
+            thres = float(getattr(C, "YOLO_CONF_THRES", 0.0))
+            if d.score < thres:
+                # 低于下发阈值的弱检出：只画细灰框，不参与精修（否则
+                # 框本身就不准，精修必然以 color:box center 之类的理由回退，
+                # 把失败原因统计冲得看不清）
+                cv2.rectangle(canvas, (raw_bbox[0], raw_bbox[1]),
+                              (raw_bbox[2], raw_bbox[3]), (128, 128, 128), 1)
+                cv2.putText(canvas, "%s %.2f low" % (d.name, d.score),
+                            (raw_bbox[0] + 2, max(12, raw_bbox[1] - 4)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                            (128, 128, 128), 1, cv2.LINE_AA)
+                continue
+            H, W = frame.shape[:2]
+            color_conf = float(d.score)
+            gp = None
+            bbox = raw_bbox
+            if color_name is not None and getattr(C, "GRASP_REFINE", False):
+                try:
+                    gp = grasp_refine.refine(frame, raw_bbox, color_name)
+                except Exception as e:                      # noqa: BLE001
+                    self.get_logger().warn(
+                        "预览精修异常: %s: %s" % (type(e).__name__, e),
+                        throttle_duration_sec=10.0)
+                    gp = None
+            fitted = bool(gp and gp.get("ok"))
+            if not fitted:
+                why = "class?" if shape_name is None else str(
+                    (gp or {}).get("reason") or "no refine")[:16]
+                self._dbg_reason[why] = self._dbg_reason.get(why, 0) + 1
+            rp = None
+            if fitted:
+                n_fit += 1
+                bbox = [int(round(v)) for v in gp["tight_bbox"]]
+                if gp.get("rect_points") is not None:
+                    rp = np.asarray(gp["rect_points"], np.float32).copy()
+                    rp[:, 0] = np.clip(rp[:, 0], 0, W - 1)
+                    rp[:, 1] = np.clip(rp[:, 1], 0, H - 1)
+                    n_rect += 1
+            valid = self._target_in_valid_area({"bbox": bbox})
+            if valid:
+                n_valid += 1
+                draw_color = (0, 210, 0)
+                suffix = ""
+            else:
+                draw_color = (0, 165, 255)
+                suffix = " reject"
+            # 原始 YOLO 轴对齐框（细线，黄色）
+            if fitted and getattr(C, "DEBUG_DRAW_RAW_BOX", True):
+                cv2.rectangle(canvas, (raw_bbox[0], raw_bbox[1]),
+                              (raw_bbox[2], raw_bbox[3]), (0, 230, 255), 1)
+            # 贴合框：有旋转四边形就画四边形，否则退回收紧后的轴对齐框
+            if rp is not None:
+                cv2.polylines(canvas, [rp.astype(np.int32).reshape(-1, 1, 2)],
+                              True, draw_color, 2, cv2.LINE_AA)
+            else:
+                cv2.rectangle(canvas, (bbox[0], bbox[1]),
+                              (bbox[2], bbox[3]), draw_color, 2)
+            # 抓取点（红点 + 十字）
+            if fitted and gp.get("point") is not None:
+                px, py = gp["point"]
+                px, py = int(round(px)), int(round(py))
+                cv2.drawMarker(canvas, (px, py), (0, 0, 255),
+                               cv2.MARKER_CROSS, 12, 2)
+                cv2.circle(canvas, (px, py), 3, (0, 0, 255), -1)
+            if fitted:
+                label = "%s %.2f fit%s" % (d.name, d.score, suffix)
+            elif shape_name is None:
+                label = "%s %.2f class?" % (d.name, d.score)
+            else:
+                label = "%s %.2f%s" % (d.name, d.score, suffix)
+            (tw, th), _ = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+            top = max(0, bbox[1] - th - 6)
+            cv2.rectangle(canvas, (bbox[0], top),
+                          (bbox[0] + tw + 4, top + th + 6), draw_color, -1)
+            cv2.putText(canvas, label, (bbox[0] + 2, top + th + 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                        (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.putText(canvas, "YOLOv8 %d total | fit %d | rot %d | valid %d"
+                    % (len(detections), n_fit, n_rect, n_valid),
+                    (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    (0, 255, 255), 2, cv2.LINE_AA)
+        self._dbg_tick += 1
+        if self._dbg_tick % 15 == 0:
+            self.get_logger().info(
+                "预览框: 检出=%d 精修=%d 旋转=%d 可信=%d %s 失败=%s"
+                % (len(detections), n_fit, n_rect, n_valid,
+                   self._serial_flag(),
+                   dict(sorted(self._dbg_reason.items(),
+                               key=lambda kv: -kv[1])[:4])),
+                throttle_duration_sec=2.0)
+        try:
+            ok, encoded = cv2.imencode(
+                ".jpg", canvas,
+                [int(cv2.IMWRITE_JPEG_QUALITY),
+                 int(getattr(C, "DEBUG_IMAGE_JPEG_QUALITY", 80))])
+            if not ok:
+                return
+            msg = CompressedImage()
+            msg.header.stamp = stamp
+            msg.header.frame_id = "camera"
+            msg.format = "jpeg"
+            msg.data = encoded.tobytes()
+            self.pub_debug_image.publish(msg)
+        except Exception as e:                       # noqa: BLE001
+            self.get_logger().warn(
+                "调试图发布失败: %s: %s" % (type(e).__name__, e),
+                throttle_duration_sec=5.0)
+
+
+    def _fit_preview_box(self, frame, raw_bbox):
+        """用颜色轮廓收紧预览框；失败时回退 YOLO 原始框。"""
+        if not getattr(C, "DEBUG_BOX_FIT", True):
+            return raw_bbox, False, None, 0.0, None
+        x1, y1, x2, y2 = raw_bbox
+        H, W = frame.shape[:2]
+        roi = frame[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+        if roi.size == 0:
+            return raw_bbox, False, None, 0.0, None
+        color, color_conf = classify_color(roi)
+        if color is None:
+            return raw_bbox, False, None, color_conf, None
+        gp = grasp_refine.refine(frame, raw_bbox, color)
+        if not gp["ok"]:
+            return raw_bbox, False, color, color_conf, None
+        fitted = [int(round(v)) for v in gp["tight_bbox"]]
+        rp = gp.get("rect_points")
+        if rp is not None:
+            rp = np.asarray(rp, np.float32).copy()
+            rp[:, 0] = np.clip(rp[:, 0], 0, W - 1)
+            rp[:, 1] = np.clip(rp[:, 1], 0, H - 1)
+        return fitted, True, color, color_conf, rp
+
+    def on_detection(self, msg):
+        self.stat_det += 1
+        targets = []
+        for t in msg.targets:
+            shape, color = C.parse_yolo_class(t.type)
+            rois = getattr(t, "rois", None)
+            if rois is None:                       # 兼容旧版 tracks 结构
+                rois = []
+                for tr in (getattr(t, "tracks", None) or []):
+                    rois.extend(list(getattr(tr, "rois", []) or []))
+            for roi in rois:
+                conf = float(roi.confidence)
+                if conf < C.YOLO_CONF_THRES:
+                    continue
+                targets.append({
+                    "shape": shape,
+                    "color": color,
+                    "class_name": t.type,
+                    "color_conf": conf,
+                    "conf": conf,
+                    "bbox": [int(roi.rect.x_offset), int(roi.rect.y_offset),
+                             int(roi.rect.x_offset + roi.rect.width),
+                             int(roi.rect.y_offset + roi.rect.height)],
+                })
+        frame = self._pick_frame(msg.header.stamp)
+        self._process_targets(targets, msg.header.stamp, frame)
+
+    def _process_targets(self, targets, stamp, frame):
+        # 识别自检（台架模式）：放在屏蔽判定【之前】，抓取窗口里也照打,
+        # 否则连续放料时会有一半结果被窗口吃掉。
+        if self.scan_all and targets:
+            self._log_scan(targets, stamp, frame)
+        if targets:
+            self._log_targets("检出", targets)
+
+        # 只允许可信成像区域内的目标驱动龙门。模型在画面边缘偶尔会给出
+        # 0.7~1.0 的误检，单靠 conf 阈值去不掉。
+        if getattr(C, "DET_VALID_RADIUS_ONLY", True):
+            filtered = [t for t in targets if self._target_in_valid_area(t)]
+            if len(filtered) != len(targets):
+                self.get_logger().debug(
+                    "过滤边缘/不可信目标 %d 个，保留 %d 个"
+                    % (len(targets) - len(filtered), len(filtered)))
+            targets = filtered
+
+        # 被 32 限位保护拒过的位置：拉黑期内不再下发（否则同一颗物料反复撞 ERR）
+        if self.rejects:
+            ttl = float(getattr(C, "GRAB_ERR_BLACKLIST_TTL_S", 120.0))
+            now_r = time.time()
+            self.rejects = [r for r in self.rejects if now_r - r[2] < ttl]
+            kept = [t for t in targets if not self._is_rejected_target(t)]
+            if len(kept) != len(targets):
+                self.get_logger().debug(
+                    "跳过被 32 拒过的位置 %d 个，保留 %d 个"
+                    % (len(targets) - len(kept), len(kept)))
+            targets = kept
+            if not targets:
+                return
+
+
+        # 工作空间限位：算出来的坐标越界就是误识别，直接打回，不占用下发机会。
+        if getattr(C, "WORKSPACE_X_MAX", None) is not None:
+            kept, out = [], []
+            for t in targets:
+                xy = self._target_xy_mm(t)
+                if xy is not None and not self._in_workspace(*xy):
+                    out.append((t, xy))
+                else:
+                    kept.append(t)
+            if out:
+                self.stat_out_range += len(out)
+                t0, xy0 = out[0]
+                self.get_logger().warn(
+                    "打回重新识别：越界目标 %d 个，例如 %s %s (%.0f, %.0f)mm "
+                    "不在 X[%.0f,%.0f] Y[%.0f,%.0f]"
+                    % (len(out), t0["shape"], self._bbox_text(t0["bbox"]),
+                       xy0[0], xy0[1],
+                       C.WORKSPACE_X_MIN, C.WORKSPACE_X_MAX,
+                       C.WORKSPACE_Y_MIN, C.WORKSPACE_Y_MAX),
+                    throttle_duration_sec=5.0)
+            targets = kept
+            if not targets:
+                return
+
+        # 抓取窗口：机械臂/夹具会进入视野并被 YOLO 误检成物料，必须屏蔽
+        if self.blank_until_mono and time.monotonic() < self.blank_until_mono:
+            self.stat_blank += 1
+            return
+        if not targets:
+            return
+        self.stat_hit += 1
+        targets.sort(key=lambda d: -d["conf"])
+
+        # 同类优先：上一颗发的是什么，就先把画面里同类的都清完，少换工位/换姿态；
+        # 画面里没有同类了，才回到「取分数最高」。
+        if getattr(C, "SAME_CLASS_FIRST", True) and self.last_sent_key:
+            same = [t for t in targets
+                    if (t.get("shape"), t.get("color")) == self.last_sent_key]
+            if same:
+                if same[0] is not targets[0]:
+                    targets = [same[0]] + [t for t in targets if t is not same[0]]
+                self.get_logger().info(
+                    "同类优先：本次仍发 %s/%s（同类在画面里还有 %d 个）"
+                    % (same[0]["shape"], same[0].get("color"), len(same)),
+                    throttle_duration_sec=5.0)
+            else:
+                self.get_logger().info(
+                    "同类优先：画面里已无 %s/%s，改发分数最高的 %s/%s"
+                    % (self.last_sent_key[0], self.last_sent_key[1],
+                       targets[0]["shape"], targets[0].get("color")),
+                    throttle_duration_sec=5.0)
+
+        # 同一位置反复抓：要么 32 没夹住（物料还在原地），要么物料已被搬走而
+        # 模型还在原地误检。一个位置在窗口内最多下发 GRAB_REPEAT_MAX 次，超过
+        # 就换下一颗，否则会一直对着同一处空抓。
+        if self.grab_hist:
+            win = float(getattr(C, "GRAB_REPEAT_WINDOW_S", 180.0))
+            since = time.time() - win
+            hist = [h for h in self.grab_hist if h[2] >= since]
+            if len(hist) != len(self.grab_hist):
+                self.grab_hist = deque(hist, maxlen=self.grab_hist.maxlen)
+            lim = int(getattr(C, "GRAB_REPEAT_MAX", 2))
+            rad = float(getattr(C, "GRAB_REPEAT_MM", 20.0))
+            kept = []
+            for t in targets:
+                xy = self._target_xy_mm(t)
+                if xy is None:
+                    kept.append(t)
+                    continue
+                tries = sum(1 for h in hist
+                            if (xy[0] - h[0]) ** 2 + (xy[1] - h[1]) ** 2
+                            <= rad * rad)
+                if tries >= lim:
+                    self.stat_repeat_skip += 1
+                    continue
+                kept.append(t)
+            if len(kept) != len(targets):
+                self.get_logger().warn(
+                    "同一位置已下发 %d 次仍被检出，跳过 %d 个目标"
+                    "（疑似空抓或误检；窗口 %.0fs，半径 %.0fmm）"
+                    % (lim, len(targets) - len(kept), win, rad),
+                    throttle_duration_sec=5.0)
+                targets = kept
+                if not targets:
+                    self._cand_c = None
+                    self._cand_hits = 0
+                    return
+
+        # 调试：把当前所有有效目标发出去
+        self.pub_debug.publish(String(data=json.dumps(
+            {"n": len(targets), "top": targets[0]}, ensure_ascii=False)))
+
+        # 严格单发：上一次抓取刚结束，必须等一帧「新的」图像才允许再发，
+        # 避免拿 OK 之前的旧画面重复下发同一个位置。
+        if getattr(C, "SORT_ONE_BY_ONE", True) and self.img_seq <= self.arm_seq:
+            self.stat_wait_frame += 1
+            return
+        if not (self.armed and not self.busy):
+            return
+        if time.monotonic() - self.last_fire_mono < C.SORT_COOLDOWN_S:
+            return
+        # 置信度最高 + 最稳定：targets 已按 conf 从高到低排好，只看第一颗；
+        # 它必须在同一位置连续出现 STABLE_PICK_FRAMES 帧才允许发，
+        # 只闪一帧的误检会被连续性挡掉。
+        need = int(getattr(C, "STABLE_PICK_FRAMES", 2))
+        if need > 1:
+            tb = targets[0]["bbox"]
+            ccx, ccy = (tb[0] + tb[2]) / 2.0, (tb[1] + tb[3]) / 2.0
+            tol = float(getattr(C, "STABLE_PICK_PX", 30.0))
+            if self._cand_c is not None and \
+                    ((ccx - self._cand_c[0]) ** 2 +
+                     (ccy - self._cand_c[1]) ** 2) ** 0.5 <= tol:
+                self._cand_hits += 1
+            else:
+                self._cand_hits = 1
+            self._cand_c = (ccx, ccy)
+            if self._cand_hits < need:
+                self.stat_stable += 1
+                return
+        # 防重复：同一位置已下发过的物料，等它被搬走/移动后再抓
+        top = targets[0]
+        cx = (top["bbox"][0] + top["bbox"][2]) / 2.0
+        cy = (top["bbox"][1] + top["bbox"][3]) / 2.0
+        if self.lock_center is not None:
+            d = ((cx - self.lock_center[0]) ** 2 +
+                 (cy - self.lock_center[1]) ** 2) ** 0.5
+            if d < getattr(C, "SAME_TARGET_LOCK_PX", 45) and \
+                    time.time() - self.lock_time < getattr(C, "SAME_TARGET_LOCK_S", 20.0):
+                return
+            self.lock_center = None        # 物料移动了/超时，解除锁定
+        self._cand_c = None          # 发出去了，稳定性重新计数
+        self._cand_hits = 0
+        self._fire(top, stamp, frame)
+
+    def _target_in_valid_area(self, target):
+        x1, y1, x2, y2 = target["bbox"]
+        w, h = x2 - x1, y2 - y1
+        if w < getattr(C, "DET_MIN_BOX_PX", 12) or \
+                h < getattr(C, "DET_MIN_BOX_PX", 12):
+            return False
+        margin = getattr(C, "DET_BORDER_MARGIN_PX", 6)
+        if x1 < margin or y1 < margin or \
+                x2 >= C.IMAGE_WIDTH - margin or y2 >= C.IMAGE_HEIGHT - margin:
+            return False
+        level, _ = camera_model.check_point((x1 + x2) / 2.0,
+                                            (y1 + y2) / 2.0)
+        return level == "ok"
+
+    def on_start(self, msg):
+        if msg.data:
+            self.armed = True
+            self.busy = False
+            self.blank_until = 0.0
+            self.blank_until_mono = 0.0
+            self.lock_center = None          # 显式启动 = 重新允许抓取当前目标
+            self.get_logger().info("收到启动信号，进入待触发状态")
+            self._publish_state("ARMED")
+
+    def on_reset(self, msg):
+        if msg.data:
+            self.armed = False
+            self.busy = False
+            self.blank_until = 0.0
+            self.blank_until_mono = 0.0
+            self.get_logger().info("收到复位信号")
+            self._publish_state("RESET")
+
+    # ---------------- 一次分拣流程 ----------------
+    def _begin_grab(self, now, frame_seq=None, frame_stamp=""):
+        """进入抓取窗口（屏蔽检测），按模式设定窗口上限。"""
+        self.busy = True
+        self.grab_start = now
+        self.grab_start_mono = time.monotonic()
+        self.grab_frame_seq = int(
+            self.img_seq if frame_seq is None else frame_seq)
+        self.grab_frame_stamp = str(frame_stamp or "")
+        if self.grab_done_mode == "byte":
+            window = self.grab_timeout_s
+            if self.comm is not None:
+                self.comm.drain()   # 清掉残留字节，避免把上一次的完成信号误当本次
+        else:
+            window = self.grab_cycle_s
+        blank_s = getattr(C, "BLANK_AFTER_DONE_S", 0.8)
+        self.blank_until = now + window + blank_s
+        self.blank_until_mono = time.monotonic() + window + blank_s
+        self.wait_ok_flag = False          # 新一次抓取，重新计时等 OK
+        self._wait_relog_t = 0.0
+        self.stuck_logged = False
+        self._publish_state("GRABBING")
+
+    def _log_scan(self, targets, stamp, frame):
+        """把这一帧的识别结果打出来（形状/颜色/像素/毫米），带两点稳定化：
+
+        1) 同帧去重：模型偶尔给同一个物料出两个框（相距十几像素、形状还不一样），
+           只留置信度最高的那个，否则一行里会出现两个"目标"其实是同一颗。
+        2) 时序投票：同一位置（60px 网格）最近 2 秒内的 (形状, 颜色) 取多数，
+           消掉"这一帧叫圆锥、下一帧叫圆柱"的抖动。样本不足 3 帧的点后面跟 "·"，
+           表示还没投稳，别信。
+        """
+        now = time.time()
+        if now - self.last_scan_t < self.scan_interval:
+            return
+        self.last_scan_t = now
+
+        raw = []
+        for t in sorted(targets, key=lambda d: -d["conf"]):
+            x1, y1, x2, y2 = t["bbox"]
+            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            color, cconf = t.get("color"), float(t.get("color_conf", 0.0))
+            if color is None and frame is not None:
+                H, W = frame.shape[:2]
+                roi = frame[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+                if roi.size:
+                    color, cconf = classify_color(roi)
+            if any(abs(cx - a) < 55 and abs(cy - b) < 55 for a, b, _s, _c, _k in raw):
+                continue
+            raw.append((cx, cy, t["shape"], color, cconf))
+
+        track = getattr(self, "_scan_track", None)
+        if track is None:
+            track = self._scan_track = {}
+        alive, parts = {}, []
+        for cx, cy, shape, color, cconf in raw:
+            key = (int(cx // 60), int(cy // 60))
+            hist = [h for h in track.get(key, []) if now - h[0] < 2.0]
+            hist.append((now, shape, color, cconf))
+            alive[key] = hist
+            shapes = [h[1] for h in hist]
+            colors = [h[2] for h in hist if h[2]]
+            s = max(set(shapes), key=shapes.count)
+            c = max(set(colors), key=colors.count) if colors else None
+            cx_u, cy_u = camera_model.undistort_point(cx, cy)
+            x_mm, y_mm, _ = pixel_to_robot(cx_u, cy_u)
+            level, _why = camera_model.check_point(cx, cy)
+            _mid = comm.material_id(s, c)[0] if c else None
+            parts.append(
+                "%s/%s(%.2f)%s 物料号=%s px=(%.0f,%.0f) mm=(%.1f,%.1f)%s"
+                % (C.SHAPE_NAMES_CN.get(s, s), c if c else "判色失败", cconf,
+                   "" if len(hist) >= 3 else "·",
+                   "?" if _mid is None else _mid, cx, cy, x_mm, y_mm,
+                   " ⚠外推" if level != "ok" else ""))
+        self._scan_track = alive
+        self.get_logger().info("[扫描] %d 个目标: %s"
+                               % (len(parts), " | ".join(parts) if parts else "无"))
+
+    def _fire(self, target, stamp, frame):
+        if not self.homed:
+            self.get_logger().warn(
+                "等 STM32 归零完成 OK，暂不下发第一颗物料",
+                throttle_duration_sec=5.0)
+            self._publish_state("WAIT_HOME")
+            return
+        if frame is None:
+            self.get_logger().warn("有检测但无图像帧，跳过（图像话题没收到？）")
+            return
+        x1, y1, x2, y2 = target["bbox"]
+        H, W = frame.shape[:2]
+        # 越界保护
+        x1c, y1c = max(0, x1), max(0, y1)
+        x2c, y2c = min(W, x2), min(H, y2)
+        if x2c - x1c < 10 or y2c - y1c < 10:
+            self.get_logger().warn("ROI 太小/越界，跳过: %s" % (target["bbox"],))
+            return
+
+        roi = frame[y1c:y2c, x1c:x2c]
+        color = target.get("color")
+        color_conf = float(target.get("color_conf", target["conf"]))
+        if color is None:
+            self.stat_color_fail += 1
+            self.last_fire_t = time.time()      # 失败也进冷却，避免 37Hz 刷屏
+            self.last_fire_mono = time.monotonic()
+            self.get_logger().warn(
+                "YOLO 类别缺少颜色 conf=%.2f shape=%s class=%s" %
+                (color_conf, target["shape"], target.get("class_name")),
+                throttle_duration_sec=2.0)
+            self._publish_state("COLOR_FAIL")
+            return
+
+        cdiag = "yolo_class=%s" % target.get("class_name", target["shape"])
+        # ---- 抓取点：不用框中心 ----
+        # YOLO 的框天生比物料大一圈（回归 + 阴影 + stride 8 网格），框中心跟着偏；
+        # 物料是单色塑料件，颜色轮廓比模型回归准得多，所以改成在框内做颜色分割，
+        # 用轮廓质心（或最小外接矩形中心）当抓取点。1px≈0.27mm，偏 8px 就是 2mm。
+        box_cx, box_cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        gp = None
+        if getattr(C, "GRASP_REFINE", True):
+            gp = grasp_refine.refine(frame, target["bbox"], color)
+        if gp is not None and gp["ok"]:
+            cx, cy = gp["point"]
+            self.stat_refine_ok += 1
+            self.get_logger().info(
+                "抓取点精修%s 框中心=(%.1f,%.1f) 偏移=%.1fpx"
+                % (grasp_refine.describe(gp), box_cx, box_cy,
+                   ((cx - box_cx) ** 2 + (cy - box_cy) ** 2) ** 0.5),
+                throttle_duration_sec=1.0)
+        else:
+            cx, cy = box_cx, box_cy
+            if gp is not None:
+                self.stat_refine_fb += 1
+                self.get_logger().warn("抓取点%s" % grasp_refine.describe(gp),
+                                       throttle_duration_sec=5.0)
+        # 广角畸变修正：必须做在"像素->毫米"之前。手眼矩阵是仿射的，
+        # 吸收不了非线性畸变（C100 实测 r=0.64 处已修正 14px ≈ 2mm，越往外越大）。
+        # planar_calib 标定时也是先去畸变再检角点，两边口径一致。
+        cx_u, cy_u = camera_model.undistort_point(cx, cy)
+        # 内参样本只覆盖到 valid_radius，超出就是外推：照发，但必须喊出来
+        level, why_r = camera_model.check_point(cx, cy)
+        if level == "ok":
+            pass
+        else:
+            self.stat_edge += 1
+            self.get_logger().warn(
+                "目标在去畸变覆盖区之外：%s（原始像素 %.0f,%.0f）→ 该处毫米值不可靠，"
+                "把物料往画面中间挪" % (why_r, cx, cy),
+                throttle_duration_sec=10.0)
+        x_mm, y_mm, z_mm = pixel_to_robot(cx_u, cy_u)
+        # 工作空间硬闸：精修后的抓取点也可能越界（框中心在内、质心在外），
+        # 越界一律不发，并把这个位置拉黑一会儿，后面的帧不再拿它试。
+        if not self._in_workspace(x_mm, y_mm):
+            self.stat_out_range += 1
+            self.rejects.append((x_mm, y_mm, time.time()))
+            self.last_fire_t = time.time()
+            self.last_fire_mono = time.monotonic()
+            self.get_logger().warn(
+                "抓取点越界，打回重新识别：%s/%s (%.0f, %.0f)mm "
+                "不在 X[%.0f,%.0f] Y[%.0f,%.0f]"
+                % (target["shape"], color, x_mm, y_mm,
+                   C.WORKSPACE_X_MIN, C.WORKSPACE_X_MAX,
+                   C.WORKSPACE_Y_MIN, C.WORKSPACE_Y_MAX),
+                throttle_duration_sec=5.0)
+            self._publish_state("OUT_OF_RANGE")
+            return
+        # ---- 安全闸：没标定 / 串口掉了，一律不许下发 ----
+        # 这两条以前只是打日志然后照发，龙门装好后一旦忘了标定就会满场乱走。
+        block = safety.check_downlink(
+            calibrated=hand_eye.is_calibrated(),
+            allow_uncalibrated=self.allow_uncalibrated,
+            serial_ok=self.serial_ok,
+            serial_sim=self.serial_sim) if self.require_calib else None
+        if block is None and not self.require_calib:
+            # 标定闸被 config 全局关掉时，串口闸仍然要生效
+            block = safety.check_downlink(
+                calibrated=True, allow_uncalibrated=True,
+                serial_ok=self.serial_ok, serial_sim=self.serial_sim)
+        if block is not None:
+            code, why = block
+            self.stat_blocked += 1
+            now_b = time.time()
+            self.last_fire_t = now_b          # 进冷却，避免 30Hz 刷屏
+            self.last_fire_mono = time.monotonic()
+            self._publish_state(code)
+            self.get_logger().error(
+                "拒绝下发[%s]：%s。坐标不发出（想台架演示见 "
+                "BOARD_README「安全闸」一节）" % (code, why),
+                throttle_duration_sec=10.0)
+            # 即使不发，也把"本该发的 10 个字节"打出来 —— 32 那边对帧结构
+            # （帧头/物料号表/字节序/CRC）时不用等标定完成就能逐字节核对。
+            self._log_dry_frame(target["shape"], color, x_mm, y_mm, 0.0,
+                                prefix="[预演]")
+            # 仍然发一条 result 供调试，但显式标记 blocked，下游应丢弃
+            self.pub_result.publish(String(data=json.dumps({
+                "stamp": "%d.%09d" % (stamp.sec, stamp.nanosec),
+                "shape": target["shape"], "color": color,
+                "conf": round(target["conf"], 3),
+                "pixel": [round(cx, 1), round(cy, 1)],
+                "pixel_undist": [round(cx_u, 1), round(cy_u, 1)],
+                "robot_mm": [x_mm, y_mm, z_mm],
+                "blocked": code,
+                "blocked_reason": why,
+            }, ensure_ascii=False)))
+            return
+
+        now = time.time()
+        now_mono = time.monotonic()
+        self.last_fire_t = now
+        self.last_fire_mono = now_mono
+        self.stat_fire += 1
+        self.lock_center = (cx, cy)        # 锁定该物料，防重复下发
+        self.lock_time = now
+        self.last_sent_xy = (int(round(x_mm)), int(round(y_mm)))
+        # 记住这次下发的位置：同一处反复下发就是空抓或误检
+        self.grab_hist.append((float(x_mm), float(y_mm), now))
+        self._begin_grab(
+            now, self.img_seq, "%d.%09d" % (stamp.sec, stamp.nanosec))
+        # 进入抓取窗口，期间屏蔽检测
+        if not self.auto_trigger:
+            self.armed = False          # 单次触发模式：发一次就不再自动触发
+
+        mid = comm.material_id(target["shape"], color)[0]
+        self.last_sent_desc = "%s/%s px(%.0f,%.0f) mm=(%d,%d) 物料号=%d 分=%.2f" % (
+            C.SHAPE_NAMES_CN.get(target["shape"], target["shape"]),
+            C.COLOR_NAMES_CN.get(color, color), cx, cy,
+            int(round(x_mm)), int(round(y_mm)), int(mid), target["conf"])
+        self.last_sent_t = now
+        self.last_sent_key = (target["shape"], target.get("color"))
+        payload = {
+            "stamp": "%d.%09d" % (stamp.sec, stamp.nanosec),
+            "shape": target["shape"],
+            "shape_cn": C.SHAPE_NAMES_CN.get(target["shape"], target["shape"]),
+            "shape_id": comm.SHAPE_ID.get(target["shape"], 255),
+            "color": color,
+            "color_cn": C.COLOR_NAMES_CN.get(color, color),
+            "color_id": comm.COLOR_ID.get(color, 255),
+            "material_id": mid,
+            "conf": round(target["conf"], 3),
+            "color_conf": color_conf,
+            "bbox": target["bbox"],
+            "pixel_box": [round(box_cx, 1), round(box_cy, 1)],
+            "pixel": [round(cx, 1), round(cy, 1)],
+            "grasp": None if gp is None else {
+                "ok": gp["ok"], "mode": gp["mode"], "method": gp["method"],
+                "tight_bbox": gp["tight_bbox"],
+                "rect_points": (None if gp.get("rect_points") is None else
+                                [[round(float(px), 1), round(float(py), 1)]
+                                 for px, py in gp["rect_points"]]),
+                "rect_size": (None if gp.get("rect_size") is None else
+                              [round(float(gp["rect_size"][0]), 1),
+                               round(float(gp["rect_size"][1]), 1)]),
+                "fill": round(gp["fill"], 3),
+                "coverage": round(gp["coverage"], 3),
+                "solidity": round(gp["solidity"], 3),
+                "ratio": None if gp["ratio"] is None else
+                         [round(gp["ratio"][0], 3), round(gp["ratio"][1], 3)],
+                "angle": None if gp["angle"] is None else round(gp["angle"], 1),
+                "radius": None if gp["radius"] is None else round(gp["radius"], 1),
+                "reason": gp["reason"],
+            },
+            "pixel_undist": [round(cx_u, 1), round(cy_u, 1)],
+            "undistort": camera_model.is_active(),
+            "robot_mm": [x_mm, y_mm, z_mm],
+        }
+        self.pub_result.publish(String(data=json.dumps(payload,
+                                                      ensure_ascii=False)))
+        if camera_model.is_active():
+            self.get_logger().info(
+                "目标 %s/%s conf=%.2f %s px=(%.0f,%.0f)->去畸变(%.0f,%.0f) "
+                "-> (%.1f, %.1f)mm  物料号=%s %s %s  %s"
+                % (payload["shape_cn"], color, payload["conf"],
+                   self._bbox_text(target["bbox"]),
+                   cx, cy, cx_u, cy_u, x_mm, y_mm, mid,
+                   self._serial_flag(), self._home_flag(), cdiag))
+        else:
+            self.get_logger().info(
+                "目标 %s/%s conf=%.2f %s px=(%.0f,%.0f) -> (%.1f, %.1f)mm "
+                "物料号=%s %s %s  %s"
+                % (payload["shape_cn"], color, payload["conf"],
+                   self._bbox_text(target["bbox"]), cx, cy, x_mm, y_mm, mid,
+                   self._serial_flag(), self._home_flag(), cdiag))
+
+        if self.serial_worker is not None and self.serial_ok:
+            self.serial_worker.submit(target["shape"], color, x_mm, y_mm)
+        else:
+            self._log_dry_frame(target["shape"], color, x_mm, y_mm,
+                                self.grab_cycle_s)
+
+        self._publish_state("SENT" if (self.serial_worker and self.serial_ok)
+                            else "SIM_SENT")
+
+    def _log_dry_frame(self, shape, color, x_mm, y_mm, cycle_s, prefix="[SIM]"):
+        """把"本来要发给 STM32 的那 10 个字节"原样打出来（不发）。
+
+        只打印毫米值没用 —— STM32 侧最容易错的是帧结构（帧头/物料号表/字节序/CRC），
+        这些从 mm 值上看不出来。这里直接给 hex，可以逐字节对固件。
+        模拟模式和"被安全闸拦下"时都用它，所以前缀可传。
+        """
+        try:
+            b = comm.build_frame(shape, color, x_mm, y_mm)
+        except Exception as e:                        # noqa: BLE001
+            self.get_logger().error(
+                "%s 组帧失败: %s: %s" % (prefix, type(e).__name__, e))
+            return
+        hexs = " ".join("%02X" % v for v in bytearray(b))
+        mid, shape_id, color_id = comm.material_id(shape, color)
+        self.get_logger().info(
+            "%s 应发 STM32: %s  (%d 字节) | 物料号=%s 形状=%s(%d) 颜色=%s(%d) "
+            "x=%d y=%d crc=0x%02X tail=0x%02X | 模拟抓取 %.1fs"
+            % (prefix, hexs, len(b), "?" if mid is None else mid,
+               C.SHAPE_NAMES_CN.get(shape, shape), shape_id,
+               C.COLOR_NAMES_CN.get(color, color), color_id,
+               int(round(x_mm)), int(round(y_mm)), b[8], b[9], cycle_s))
+        # 形状号落到 32 口径表里的空号时提醒一句（当前表十个号都有实物，
+        # 这里是为以后改表留的保险：真出现空号，日志要能立刻看出来）。
+        if isinstance(shape_id, int) and 0 <= shape_id <= 9 \
+                and C.shape_cn(shape_id) is None:
+            self.get_logger().warn(
+                "⚠ 形状号 %d 在 32 口径表里是空号，本轮下发会被 32 忽略" % shape_id)
+
+    # ---------------- 标定热加载 ----------------
+    def on_reload_calib(self, request, response):
+        """
+        重新读 hand_eye.json 和 camera_intrinsic.json，不用重启节点。
+
+            ros2 service call /sort/reload_calib std_srvs/srv/Trigger
+        """
+        try:
+            old = hand_eye.describe()
+            hand_eye.reload()
+            new = hand_eye.describe()
+            self.require_calib = bool(getattr(C, "SAFETY_REQUIRE_CALIB", True))
+            ok = camera_model.check_hand_eye_consistency(
+                getattr(hand_eye, "META", {}) or {}, self.get_logger())
+            msg = "重载完成 | 之前: %s | 现在: %s" % (old, new)
+            if hand_eye.is_calibrated() and not self.allow_uncalibrated:
+                msg += " | 标定闸已放开，可以正常下发"
+            self.get_logger().info(msg)
+            response.success = True if ok is not False else False
+            response.message = msg
+        except Exception as e:                        # noqa: BLE001
+            msg = "重载失败: %s: %s" % (type(e).__name__, e)
+            self.get_logger().error(msg)
+            response.success = False
+            response.message = msg
+        return response
+
+    def _publish_state(self, s):
+        self.pub_state.publish(String(data=s))
+
+    def _last_sent_text(self):
+        if not self.last_sent_desc:
+            return "还没发过"
+        return "%s (%.0fs前)" % (
+            self.last_sent_desc, time.time() - self.last_sent_t)
+
+    def on_timer(self):
+        self._try_reopen_serial()
+        self.get_logger().info(
+            "[状态] 相机=%.1ffps 帧=%d 含目标=%d 下发=%d 屏蔽=%d 拒绝=%d "
+            "越界=%d 颜色失败=%d 安全闸=%d 串口失败=%d 外推=%d 精修=%d/%d "
+            "缓存=%d 推理=%.1fms busy=%s armed=%s %s %s 等新帧=%d 等稳定=%d "
+            "重复跳过=%d 掉线=%d 最近=%s"
+            % (self._cam_fps, self.stat_det, self.stat_hit, self.stat_fire,
+               self.stat_blank, self.stat_reject, self.stat_out_range,
+               self.stat_color_fail, self.stat_blocked, self.stat_send_fail,
+               self.stat_edge, self.stat_refine_ok, self.stat_refine_fb,
+               len(self.frames), self.stat_infer_ms, self._busy_text(),
+               "True" if self.armed else "False",
+               self._serial_flag(), self._home_flag(), self.stat_wait_frame,
+               self.stat_stable, self.stat_repeat_skip, self._stat_link_loss,
+               self._last_sent_text()))
+
+    def destroy_node(self):
+        if self.serial_worker:
+            self.serial_worker.stop()
+        if self.comm:
+            try:
+                self.comm.close()
+            except Exception:
+                pass
+        super().destroy_node()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = SortVisionNode()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+        pass
+    finally:
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
