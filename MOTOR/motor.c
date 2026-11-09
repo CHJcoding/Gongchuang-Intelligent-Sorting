@@ -258,24 +258,41 @@ HAL_StatusTypeDef Z_MoveTo(float z_mm, uint16_t vel_rpm, uint8_t acc)
  * ============================================================ */
 uint32_t Motion_EstimateTimeMs(float distance_mm, uint16_t vel_rpm, uint8_t acc, float mm_per_rev)
 {
-    if (distance_mm < 0.1f || vel_rpm == 0 || mm_per_rev <= 0.0f) {
-        return 0;
+    float dist = fabsf(distance_mm);
+    if (dist < 0.1f || vel_rpm == 0 || mm_per_rev <= 0.0f) {
+        return WAIT_EXTRA_SAFE_MS; 
     }
 
-    float v_mm_s = ((float)vel_rpm / 60.0f) * mm_per_rev;
-    float t_cruise = fabsf(distance_mm) / v_mm_s;
+    // 1. 计算最高线速度 (mm/s)
+    float v_max = ((float)vel_rpm / 60.0f) * mm_per_rev;
 
-    float t_acc = 0.3f; 
-    if (acc > 0) {
-        t_acc = 51.0f / (float)acc; 
-    } else {
-        t_acc = 0.0f; 
+    // 2. 估算物理加速度 (mm/s^2)
+    // 假设 acc=255 时，最大物理加速度约为 4000 mm/s^2 (可根据你的实际机械阻力微调这个基数)
+    // 如果 acc=40，那么 a = 4000 * 40 / 255 ≈ 627 mm/s^2
+    float a = (acc == 0) ? 4000.0f : (4000.0f * (float)acc / 255.0f); 
+
+    // 3. 计算加速到最高速所需的物理距离
+    float dist_acc = (v_max * v_max) / (2.0f * a); 
+
+    float t_total_s = 0.0f;
+
+    if (dist < (dist_acc * 2.0f)) 
+    {
+        // 【三角形曲线】距离太短，达不到最高速，纯加速再纯减速
+        t_total_s = 2.0f * sqrtf(dist / a);
+    } 
+    else 
+    {
+        // 【梯形曲线】距离够长，能达到最高速
+        float t_acc = v_max / a;                        // 加速所需时间
+        float t_cruise = (dist - 2.0f * dist_acc) / v_max; // 匀速时间
+        t_total_s = 2.0f * t_acc + t_cruise;            // 总时间
     }
-    
-    float t_total = t_cruise + t_acc;
-    uint32_t ms = (uint32_t)(t_total * 1.2f * 1000.0f);
 
-    if (ms < 100U) ms = 100U;
+    // 4. 转换为毫秒，并加上自定义余量
+    // (高速时，皮带弹性回弹需要更多时间停稳，所以额外加的余量必不可少)
+    uint32_t ms = (uint32_t)(t_total_s * 1000.0f) + WAIT_EXTRA_SAFE_MS;
+
     return ms;
 }
 

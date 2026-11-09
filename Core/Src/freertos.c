@@ -60,7 +60,6 @@
 #define PNEUMATIC_TEST_ENABLE   0U
 #define CHASSIS_TEST_ENABLE     0U
 #define COMM_TASK_TEST_ENABLE   0U
-#define MOTOR_POSITION_REPORT_ENABLE 0U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -339,7 +338,7 @@ void IndicatorTask(void *argument)
   /* USER CODE BEGIN IndicatorTask */
     
     comm_vision_t target_pos;
-
+    const int MAX_RETRY = 3;    //未检测到物体时，重复抓取次数（超过该次数进入超时）
     
   /* Infinite loop */
   for(;;)
@@ -391,73 +390,103 @@ void IndicatorTask(void *argument)
       
       //1. 阻塞等待运动指令
       if(osMessageQueueGet(MotionQueueHandle, &target_pos, NULL, 100U) == osOK)
-      {
-          // --- 放置实际电机、舵机动作 ---
-          // ==========================================
-          // 阶段 1：准备抓取
-          // ==========================================
-          // 1. 确保 Z 轴在安全高度（防止平移时撞机）
-          Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+      {          
           
-          // 2. XY 移动到物料上方
-          if (Chassis_MoveToAndWait(target_pos.M_x, target_pos.M_y, XY_VEL, XY_ACC) != HAL_OK)
+          uint8_t drop_success = 0; //是否抓取成功标志
+          
+          // ==========================================
+          // 阶段 0：去抓取（带防撞机、重试、光电检测）
+          // ==========================================          
+          for (int retry = 0; retry < MAX_RETRY; retry++) 
           {
-              g_motion_aborted = 1; 
-              osSemaphoreRelease(MotionDoneSemHandle); 
-              continue; // 直接进入下一轮循环，Z轴完全不动
+              if (retry > 0) {
+                  // 如果重试，先确保夹爪是松开的，防止卡住物料
+                  Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
+                  Pneumatic_Off();
+                  osDelay(300); 
+              }
+              
+              // --- 放置实际电机、舵机动作 ---
+              // ==========================================
+              // 阶段 1：准备抓取
+              // ==========================================
+              // 1. 确保 Z 轴在安全高度（防止平移时撞机）
+              Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);    
+              
+              
+              // 2. XY 移动到物料上方
+              if (Chassis_MoveToAndWait(target_pos.M_x, target_pos.M_y, XY_VEL, XY_ACC) != HAL_OK)
+              {
+                  g_motion_aborted = 1; 
+                  osSemaphoreRelease(MotionDoneSemHandle); 
+                  continue; // 直接进入下一轮循环，Z轴完全不动
+              }
+              
+              Pneumatic_On();
+              //2. 下降 吸盘吸取并且舵机抓取
+              Z_MoveToAndWait(Z_PICK_HEIGHT, Z_VEL, Z_ACC);
+              
+              // ==========================================
+              // 阶段 2：抓取动作
+              // ==========================================
+              // 打开吸盘 / 舵机夹紧
+              Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
+              //osDelay(1000);
+               
+              //osDelay(500);     //加一点延迟放置吸不上
+              
+              //3. 抬起 / 归位
+               Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+              
+              //4. 移动到放置区域（需要考虑过度点）
+              // Chassis_MoveToAndWait(PUT_TRANSITION_PLACE_X, PUT_TRANSITION_PLACE_Y, XY_VEL, XY_ACC);
+              Chassis_MoveToAndWait(PUT_PLACE_X, PUT_PLACE_Y, XY_VEL, XY_ACC);
+              
+              //5. 垃圾桶旋转
+              //Spin_position(target_pos.row - 1);  这个是张大头
+              Spin_servo_position(target_pos.row - 1);    //这个是舵机
+              
+              //6. z轴下降到放置高度
+              //Z_MoveToAndWait(Z_PLACE_HEIGHT, Z_VEL, Z_ACC);
+             
+              
+              //7. 关闭吸盘 / 舵机松开
+              Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
+              osDelay(500);
+              Pneumatic_Off();
+              //osDelay(500);     //加一点延迟放置吸不上
+              
+              //8. 最后抬起 Z 轴，回到安全高度，准备下次任务
+               //Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
+              //Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
+              
+              if (Sensor_WaitForDrop(1500)) 
+              {
+                  buzzer_finish_flag(2); // 成功掉入桶中
+                  g_motion_aborted = 0; 
+                  break;
+              }
+              else 
+              {
+                  g_motion_aborted = 1; 
+              }
           }
-          Pneumatic_On();
-          //2. 下降 吸盘吸取并且舵机抓取
-          Z_MoveToAndWait(Z_PICK_HEIGHT, Z_VEL, Z_ACC);
+            // ==========================================
+            // 阶段 4：最终结算
+            // ==========================================
+            if (!drop_success || g_motion_aborted) {
+                // 重试了 3 次都没成功，或者底层报错
+                g_motion_aborted = 1; 
+            } else {
+                g_motion_aborted = 0;
+            }
+            
+            Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC); //反复抬升（目前是多余的 但留着）
           
-          // ==========================================
-          // 阶段 2：抓取动作
-          // ==========================================
-          // 打开吸盘 / 舵机夹紧
-          Servo_SetPulse(SERVO_ADDR1, SERVO1_GRIP);
-          //osDelay(1000);
-           
-          //osDelay(500);     //加一点延迟放置吸不上
-          
-          //3. 抬起 / 归位
-           Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
-          
-          //4. 移动到放置区域（需要考虑过度点）
-          // Chassis_MoveToAndWait(PUT_TRANSITION_PLACE_X, PUT_TRANSITION_PLACE_Y, XY_VEL, XY_ACC);
-          Chassis_MoveToAndWait(PUT_PLACE_X, PUT_PLACE_Y, XY_VEL, XY_ACC);
-          
-          //5. 垃圾桶旋转
-          //Spin_position(target_pos.row - 1);  这个是张大头
-          Spin_servo_position(target_pos.row - 1);    //这个是舵机
-          
-          //6. z轴下降到放置高度
-          //Z_MoveToAndWait(Z_PLACE_HEIGHT, Z_VEL, Z_ACC);
-         
-          
-          //7. 关闭吸盘 / 舵机松开
-          Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
-          osDelay(500);
-          Pneumatic_Off();
-          //osDelay(500);     //加一点延迟放置吸不上
-          
-          //8. 最后抬起 Z 轴，回到安全高度，准备下次任务
-           //Z_MoveToAndWait(Z_SAFE_HEIGHT, Z_VEL, Z_ACC);
-          //Servo_SetPulse(SERVO_ADDR1, SERVO1_RELEASE);
-          //10.可以滴滴两声（灯光变色等等）
-          buzzer_finish_flag(2);
-          
-          //11.可以加入释放信号量，告诉MainTask抓完了ww
+          //11.可以加入释放信号量，告诉MainTask抓完了
           osSemaphoreRelease(MotionDoneSemHandle);
          
       }
-      
-      #if MOTOR_POSITION_REPORT_ENABLE
-      //测试阶段专用：如果你要读位置，就把这句加上，平时务必关掉
-        //Chassis_DisableAll();
-      
-        //Chassis_ReportRealPos();
-      #endif
-
       
     osDelay(1);
   }
